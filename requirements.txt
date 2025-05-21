@@ -1,0 +1,8 @@
+PyQt6==6.5.0
+qasync==0.24.0
+matplotlib==3.7.1
+pillow==9.5.0
+numpy==1.24.3
+pywin32==306; platform_system=="Windows"
+python-markdown==3.4.3
+psutil==5.9.5 
