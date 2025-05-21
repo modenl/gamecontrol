@@ -430,9 +430,11 @@ class Database:
                 (question,)
             )
             existing = c.fetchone()
+            operation_type = "" # To store whether it's an insert or update for logging
             
             if existing:
                 # 更新现有记录
+                operation_type = f"Updating existing record ID {existing[0]}"
                 try:
                     c.execute(
                         """UPDATE math_exercises 
@@ -440,13 +442,14 @@ class Database:
                         WHERE id=?""",
                         (answer, is_correct, reward_minutes, is_gpt, existing[0])
                     )
-                    logger.info(f"更新数学练习记录: question={question}, answer={answer}, is_correct={is_correct}, reward={reward_minutes}, is_gpt={is_gpt}")
+                    # logger.info(f"更新数学练习记录: question={question}, answer={answer}, is_correct={is_correct}, reward={reward_minutes}, is_gpt={is_gpt}")
                 except sqlite3.Error as e:
                     logger.error(f"更新数学练习记录失败: {str(e)}")
                     self.conn.rollback()
                     return False
             else:
                 # 插入新记录
+                operation_type = "Inserting new record"
                 try:
                     c.execute(
                         """INSERT INTO math_exercises 
@@ -454,7 +457,7 @@ class Database:
                         VALUES (date('now'), ?, ?, ?, ?, ?)""",
                         (question, answer, is_correct, reward_minutes, is_gpt)
                     )
-                    logger.info(f"添加数学练习记录: question={question}, answer={answer}, is_correct={is_correct}, reward={reward_minutes}, is_gpt={is_gpt}")
+                    # logger.info(f"添加数学练习记录: question={question}, answer={answer}, is_correct={is_correct}, reward={reward_minutes}, is_gpt={is_gpt}")
                 except sqlite3.IntegrityError:
                     # 可能是并发操作导致的唯一约束冲突，尝试更新
                     logger.warning(f"插入数学练习记录失败，尝试更新: question={question}")
@@ -464,13 +467,14 @@ class Database:
                     )
                     retry_existing = c.fetchone()
                     if retry_existing:
+                        operation_type = f"Retry updating existing record ID {retry_existing[0]}"
                         c.execute(
                             """UPDATE math_exercises 
                             SET answer=?, is_correct=?, reward_minutes=?, is_gpt=?
                             WHERE id=?""",
                             (answer, is_correct, reward_minutes, is_gpt, retry_existing[0])
                         )
-                        logger.info(f"重试更新数学练习记录成功: question={question}")
+                        # logger.info(f"重试更新数学练习记录成功: question={question}")
                     else:
                         logger.error("重试查找记录失败，无法更新")
                         self.conn.rollback()
@@ -480,6 +484,7 @@ class Database:
                     self.conn.rollback()
                     return False
             
+            logger.info(f"Database: Committing math_exercise. Operation: {operation_type}. Question: {question[:50]}... Answer: {answer}, IsCorrect: {is_correct}, Reward: {reward_minutes}, IsGPT: {is_gpt}")
             self.conn.commit()
             
             # 验证更新
@@ -571,8 +576,8 @@ class Database:
             logger.error(f"缓存GPT题目错误: {e}")
             raise
 
-    def clear_today_gpt_questions(self):
-        """清除今天的GPT生成题目缓存"""
+    def clear_all_today_math_exercises(self):
+        """清除今天所有的数学练习记录"""
         try:
             today = datetime.date.today().strftime("%Y-%m-%d")
             # 清除所有今日记录，包括用户回答的记录
@@ -584,9 +589,9 @@ class Database:
             self._invalidate_cache("get_today_math")
             self._invalidate_cache("get_today_math_exercises")
             self._invalidate_cache("get_today_math_reward")
-            self._invalidate_cache("get_today_gpt_questions")
+            self._invalidate_cache("get_today_gpt_questions") # Keep this as is_gpt questions are also cleared
         except Exception as e:
-            logger.error(f"清除GPT题目缓存错误: {e}")
+            logger.error(f"清除今日所有数学练习记录错误: {e}")
             raise
 
     def get_cached_explanation(self, question, wrong_answer):

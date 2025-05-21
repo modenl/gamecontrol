@@ -42,6 +42,7 @@ class MathExercises:
     def load_cached_questions(self):
         """从数据库加载缓存的问题"""
         try:
+            # cached_questions = self.db.get_today_gpt_questions() # Fetches records for today where is_gpt=1, regardless of is_correct status.
             cached_questions = self.db.get_today_gpt_questions()
             if cached_questions and len(cached_questions) > 0:
                 logger.info(f"加载缓存的题目，共{len(cached_questions)}道")
@@ -231,7 +232,7 @@ Please ensure the response is in valid JSON format."""
             
             # 缓存生成的题目
             today = datetime.date.today().strftime("%Y-%m-%d")
-            await asyncio.to_thread(self.db.clear_today_gpt_questions)
+            await asyncio.to_thread(self.db.clear_all_today_math_exercises)
             c = self.db.conn.cursor()
             self.db.conn.execute("BEGIN TRANSACTION")
             for i in range(len(self.current_questions)):
@@ -284,7 +285,12 @@ Please ensure the response is in valid JSON format."""
         """获取今天已完成的题目数量"""
         exercises = self.db.get_today_math_exercises()
         # 只计算 is_correct 不为 NULL 的记录
-        completed = sum(1 for ex in exercises if ex[4] is not None)  # ex[4] 是 is_correct 字段
+        completed = 0
+        for ex in exercises:
+            if ex[4] is not None: # ex[4] 是 is_correct 字段
+                logger.info(f"Record ID {ex[0]} with is_correct={ex[4]} is counted as completed.")
+                completed += 1
+        logger.info(f"Total completed math exercises for today: {completed}")
         return completed
     
     async def check_answer_async(self, question_index, user_answer):
@@ -520,7 +526,7 @@ Please ensure the response is in valid JSON format."""
         self.current_answers = []
         self.current_explanations = []
         self.current_question_index = 0
-        self.db.clear_today_gpt_questions()
+        self.db.clear_all_today_math_exercises()
         
     def close(self):
         """关闭数据库连接"""
@@ -529,7 +535,7 @@ Please ensure the response is in valid JSON format."""
     async def regenerate_daily_questions_async(self):
         """异步重新生成今天的题目"""
         # 清除今天的题目
-        await asyncio.to_thread(self.db.clear_today_gpt_questions)
+        await asyncio.to_thread(self.db.clear_all_today_math_exercises)
         self.current_questions = []
         self.current_answers = []
         self.current_explanations = []
@@ -541,7 +547,7 @@ Please ensure the response is in valid JSON format."""
     def regenerate_daily_questions(self):
         """重新生成今天的题目 (同步版本保留兼容性)"""
         # 清除今天的题目
-        self.db.clear_today_gpt_questions()
+        self.db.clear_all_today_math_exercises()
         self.current_questions = []
         self.current_answers = []
         self.current_explanations = []

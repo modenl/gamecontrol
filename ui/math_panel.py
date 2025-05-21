@@ -212,6 +212,7 @@ class MathPanel(QDialog):
     
     async def on_questions_loaded(self, questions, done_count):
         """题目加载完成回调"""
+        logger.info(f"MathPanel: on_questions_loaded - Received done_count: {done_count}, Number of questions: {len(questions) if questions else 0}")
         self.hide_progress()
         
         self.questions = questions
@@ -286,6 +287,7 @@ class MathPanel(QDialog):
     
     def update_done_count(self):
         """更新完成计数"""
+        logger.info(f"MathPanel: update_done_count - Updating UI with self.done_count: {self.done_count}")
         # 更新完成数量显示
         self.done_label.setText(f"已完成: {self.done_count}/{MAX_DAILY_MATH_QUESTIONS}")
         
