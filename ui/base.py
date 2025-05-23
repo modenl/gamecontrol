@@ -1,17 +1,13 @@
-import sys
 import asyncio
 import datetime
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QApplication, QFrame
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QPoint, QRect
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QPoint
 from PyQt6.QtGui import QFont
 
 from logic.constants import (
-    THEME_PRIMARY, THEME_SECONDARY, THEME_SUCCESS, THEME_DANGER, 
-    THEME_WARNING, THEME_INFO, THEME_LIGHT, THEME_DARK, 
-    BUTTON_HEIGHT, BUTTON_WIDTH, BUTTON_PADX, BUTTON_PADY,
-    PADDING_SMALL, PADDING_MEDIUM, PADDING_LARGE
+    THEME_DARK
 )
 
 class ToolTip(QWidget):
@@ -59,7 +55,7 @@ class ToolTip(QWidget):
                 self.timer.stop()
                 self.hide()
         return super().eventFilter(obj, event)
-    
+        
     def show_tip(self):
         """显示提示框"""
         pos = self.parent.mapToGlobal(QPoint(self.parent.width(), 0))
@@ -79,7 +75,7 @@ class StatusBar(QWidget):
         self.setLayout(self.layout)
         self.message_timer = QTimer(self)
         self.message_timer.timeout.connect(self.clear_message)
-    
+        
     def show_message(self, message, duration=3000):
         """显示临时消息"""
         self.label.setText(message)
@@ -87,10 +83,10 @@ class StatusBar(QWidget):
         # 取消之前的计时器
         if self.message_timer.isActive():
             self.message_timer.stop()
-        
+            
         # 设置新的计时器
         self.message_timer.start(duration)
-    
+        
     def clear_message(self):
         """清除消息"""
         self.label.setText("")
@@ -167,7 +163,7 @@ class OverlayWindow(QDialog):
         # 如果设置了持续时间，设置计时器
         if duration:
             self.timer.start(duration)
-        
+            
         self.show()
     
     def update_message(self, message):
@@ -180,7 +176,7 @@ class OverlayWindow(QDialog):
         self.hide()
         if self.callback:
             self.callback()
-
+                
 class SessionTimer(QWidget):
     """带回调的Session计时器"""
     # 定义信号
@@ -212,7 +208,7 @@ class SessionTimer(QWidget):
         # 最后一分钟倒计时窗口
         self.countdown_window = None
         self.final_minute_shown = False
-    
+        
     def start(self, duration_minutes):
         """开始计时"""
         if self.is_running:
@@ -238,7 +234,7 @@ class SessionTimer(QWidget):
         if self.countdown_window:
             self.countdown_window.hide()
             self.countdown_window = None
-    
+        
     def update_timer(self):
         """更新计时器显示"""
         if not self.is_running:
@@ -274,7 +270,7 @@ class SessionTimer(QWidget):
                 self.countdown_window = None
                 
             self.timer_done_signal.emit()
-    
+            
     def show_final_minute_countdown(self):
         """显示最后一分钟倒计时"""
         if not self.countdown_window:
@@ -288,7 +284,7 @@ class SessionTimer(QWidget):
             )
         
         self.countdown_window.show_message("Session即将结束", "60秒")
-
+        
 class ShakeEffect:
     """控件抖动效果"""
     @staticmethod

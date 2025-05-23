@@ -9,24 +9,52 @@ def check_dependencies():
     """检查并安装必要的依赖"""
     required_packages = [
         'pyinstaller',
+        'PyQt6',
+        'qasync',
         'openai',
         'python-dotenv',
-        'psutil',
+        'pillow',
+        'numpy',
+        'markdown==3.4.3',
+        'python-markdown-math',
+        'psutil==5.9.5',
+        'pygetwindow',
         'pywin32'
     ]
     
+    missing_packages = []
     for package in required_packages:
+        package_name = package.split('==')[0].replace('-', '_').replace('python_', '')
+        if package_name == 'pygetwindow':
+            package_name = 'pygetwindow'
+        elif package_name == 'pillow':
+            package_name = 'PIL'
+        elif package_name == 'PyQt6':
+            package_name = 'PyQt6'
+            
         try:
-            __import__(package.replace('-', '_'))
+            __import__(package_name)
+            print(f"✓ {package} already installed")
         except ImportError:
-            print(f"正在安装 {package}...")
+            missing_packages.append(package)
+    
+    if missing_packages:
+        print(f"Installing missing packages: {', '.join(missing_packages)}")
+        for package in missing_packages:
+            print(f"Installing {package}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+    else:
+        print("✓ All dependencies are installed")
 
 def create_env_example():
     """创建.env.example文件"""
-    with open('.env.example', 'w', encoding='utf-8') as f:
-        f.write("# OpenAI API Configuration\n")
-        f.write("OPENAI_API_KEY=your_api_key_here\n")
+    if not os.path.exists('.env.example'):
+        with open('.env.example', 'w', encoding='utf-8') as f:
+            f.write("# OpenAI API Configuration\n")
+            f.write("OPENAI_API_KEY=your_api_key_here\n")
+        print("✓ Created .env.example file")
+    else:
+        print("✓ .env.example already exists")
 
 def install_upx():
     """检查UPX是否已安装，如果没有则提示安装"""

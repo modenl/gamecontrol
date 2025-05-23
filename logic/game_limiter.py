@@ -7,6 +7,7 @@ import subprocess
 import logging
 from logic.database import Database, get_week_start
 from logic.constants import MAX_WEEKLY_LIMIT, DEFAULT_WEEKLY_LIMIT
+from logic.math_exercises import MathExercises
 
 # 配置日志
 logger = logging.getLogger('game_limiter')
@@ -20,11 +21,24 @@ class GameLimiter:
         self.auto_optimize_interval = 7 * 24 * 60 * 60  # 7天（秒）
         self.last_optimize_time = 0
         
+        # 初始化数学练习模块
+        self.math_exercises = MathExercises()
+        
         # 尝试自动优化数据库
         self._check_auto_optimize()
         
+        # 执行周重置检查 (注意: 现在是异步方法，需要在initialize中调用)
+        # self.weekly_reset_check()
+        
+    async def initialize(self):
+        """异步初始化各组件"""
+        # 初始化数学练习模块
+        await self.math_exercises.initialize()
+        
         # 执行周重置检查
-        self.weekly_reset_check()
+        await self.weekly_reset_check()
+        
+        return self
         
     def start_session(self, duration, game_name="Minecraft"):
         """开始一个游戏Session"""
@@ -38,7 +52,7 @@ class GameLimiter:
             logger.error(f"开始Session时出错: {e}")
             raise Exception(f"无法开始游戏Session: {e}")
         
-    def end_session(self, note=None):
+    async def end_session(self, note=None):
         """结束当前Session"""
         if not self.current_session_start:
             logger.warning("尝试结束不存在的Session")
@@ -57,7 +71,7 @@ class GameLimiter:
             actual_duration = int((end_dt - start_dt).total_seconds() / 60)
             
             # 保存会话记录
-            self.db.add_session(
+            await self.db.add_session(
                 self.current_session_start, 
                 end_time, 
                 actual_duration,
@@ -124,14 +138,14 @@ class GameLimiter:
             logger.error(f"锁屏失败: {str(e)}")
             return False
         
-    def check_week_reset(self):
+    async def check_week_reset(self):
         """检查是否需要重置每周限制"""
         try:
             today = datetime.date.today()
             week_start = get_week_start(today).strftime("%Y-%m-%d")
             
             # 获取本周已使用时间和额外奖励时间
-            used, extra = self.db.get_week_total(week_start)
+            used, extra = await self.db.get_week_total(week_start)
             return week_start, used, extra
         except Exception as e:
             logger.error(f"检查周重置时出错: {e}")
@@ -140,7 +154,7 @@ class GameLimiter:
             week_start = get_week_start(today).strftime("%Y-%m-%d")
             return week_start, 0, 0
         
-    def get_weekly_status(self):
+    async def get_weekly_status(self):
         """获取本周游戏时间状态"""
         try:
             # 确保数据库连接有效
@@ -152,7 +166,7 @@ class GameLimiter:
             week_start = get_week_start(today).strftime("%Y-%m-%d")
             
             # 获取本周已使用时间和额外奖励时间
-            used, extra = self.db.get_week_total(week_start)
+            used, extra = await self.db.get_week_total(week_start)
             
             # 计算本周剩余时间
             weekly_limit = min(DEFAULT_WEEKLY_LIMIT + extra, MAX_WEEKLY_LIMIT)
@@ -176,7 +190,7 @@ class GameLimiter:
                 'remaining_minutes': DEFAULT_WEEKLY_LIMIT
             }
         
-    def add_weekly_extra_time(self, minutes):
+    async def add_weekly_extra_time(self, minutes):
         """添加每周额外游戏时间"""
         try:
             # 确保数据库连接有效
@@ -188,7 +202,7 @@ class GameLimiter:
             week_start = get_week_start(today).strftime("%Y-%m-%d")
             
             # 获取当前额外时间
-            _, current_extra = self.db.get_week_total(week_start)
+            _, current_extra = await self.db.get_week_total(week_start)
             
             # 添加额外时间，确保不超过上限
             max_extra = MAX_WEEKLY_LIMIT - DEFAULT_WEEKLY_LIMIT
@@ -201,7 +215,7 @@ class GameLimiter:
             if actual_added < minutes:
                 logger.warning(f"请求添加{minutes}分钟，但达到上限，实际添加{actual_added}分钟")
             
-            self.db.add_weekly_extra_time(week_start, new_extra)
+            await self.db.add_weekly_extra_time(week_start, new_extra)
             
             logger.info(f"已添加{actual_added}分钟额外时间，当前额外时间: {new_extra}分钟")
             return new_extra
@@ -209,7 +223,7 @@ class GameLimiter:
             logger.error(f"添加额外时间时出错: {e}")
             raise Exception(f"无法添加额外时间: {e}")
         
-    def modify_used_time(self, minutes_to_add):
+    async def modify_used_time(self, minutes_to_add):
         """修改本周已用时间（仅管理员使用）
         
         Args:
@@ -228,7 +242,7 @@ class GameLimiter:
             week_start = get_week_start(today).strftime("%Y-%m-%d")
             
             # 获取当前已用时间
-            current_used, _ = self.db.get_week_total(week_start)
+            current_used, _ = await self.db.get_week_total(week_start)
             
             # 创建一个手动调整的Session记录
             start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -236,7 +250,7 @@ class GameLimiter:
             
             # 添加一个特殊的Session记录，正数表示增加时间，负数表示减少时间
             note = f"管理员手动调整: {'+' if minutes_to_add > 0 else ''}{minutes_to_add}分钟"
-            self.db.add_session(start_time, end_time, minutes_to_add, "手动调整", note)
+            await self.db.add_session(start_time, end_time, minutes_to_add, "手动调整", note)
             
             # 计算新的已用时间
             new_used = current_used + minutes_to_add
@@ -247,17 +261,19 @@ class GameLimiter:
             logger.error(f"修改已用时间时出错: {e}")
             raise Exception(f"无法修改已用时间: {e}")
         
-    def get_sessions(self, week_start=None):
-        """获取游戏Session记录"""
-        try:
-            # 确保数据库连接有效
-            if hasattr(self.db, 'conn') and self.db.conn is None:
-                logger.info("检测到数据库连接已关闭，正在重新连接...")
-                self.db.reconnect()
+    async def get_sessions(self, week_start=None):
+        """获取游戏会话记录
+        
+        Args:
+            week_start: 周开始日期，如果为None，则获取所有记录
             
-            return self.db.get_sessions(week_start)
+        Returns:
+            会话记录列表
+        """
+        try:
+            return await self.db.get_sessions(week_start)
         except Exception as e:
-            logger.error(f"获取Session记录时出错: {e}")
+            logger.error(f"获取会话记录时出错: {e}")
             return []
         
     def _check_auto_optimize(self):
@@ -305,25 +321,26 @@ class GameLimiter:
         except Exception as e:
             logger.error(f"关闭数据库连接时出错: {e}")
         
-    def weekly_reset_check(self):
+    async def weekly_reset_check(self):
         """检查并执行每周重置"""
         try:
             today = datetime.date.today()
             current_week_start = get_week_start(today).strftime("%Y-%m-%d")
             
-            # 获取上次重置日期
-            last_reset = self.db.get_setting("last_weekly_reset", None)
+            # 获取上次重置时间
+            last_reset = await self.db.get_setting("last_weekly_reset", None)
             
-            # 如果没有上次重置记录或上次重置不是本周开始日期，执行重置
+            # 如果没有记录或者上次重置的周不是本周，则执行重置
             if not last_reset or last_reset != current_week_start:
-                # 记录本次重置日期
-                self.db.set_setting("last_weekly_reset", current_week_start)
+                logger.info(f"执行每周重置，上次重置: {last_reset}, 本周开始: {current_week_start}")
                 
-                # 记录重置日志
-                logger.info(f"已执行每周重置，本周开始日期: {current_week_start}")
+                # 更新最后重置时间
+                await self.db.set_setting("last_weekly_reset", current_week_start)
+                
+                # 可以在这里添加其他重置逻辑
                 
                 return True
             return False
         except Exception as e:
-            logger.error(f"每周重置检查错误: {e}")
+            logger.error(f"周重置检查错误: {e}")
             return False 

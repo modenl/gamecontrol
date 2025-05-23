@@ -12,8 +12,16 @@ DEFAULT_WEEKLY_LIMIT = 120  # 2小时（分钟）
 MAX_WEEKLY_LIMIT = 240  # 4小时（分钟）
 
 # 数学练习奖励
-MATH_REWARD_PER_QUESTION = 2  # 每道题奖励分钟数
+MATH_REWARD_PER_QUESTION = 2  # 每道题奖励分钟数（默认）
 MAX_DAILY_MATH_QUESTIONS = 6  # 每日最大题目数
+
+# 数学题难度系数对应的奖励分钟数
+MATH_DIFFICULTY_REWARDS = {
+    1: 1,  # 简单：1分钟
+    2: 2,  # 一般：2分钟
+    3: 3,  # 困难：3分钟
+    4: 4   # 竞赛级：4分钟
+}
 
 # UI相关
 UI_TITLE = "游戏时间管理器"

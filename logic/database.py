@@ -1,10 +1,8 @@
 import sqlite3
 import datetime
 import hashlib
-import os
 import logging
-import threading
-import time
+import asyncio
 from logic.constants import (
     DB_FILE, 
     MAX_WEEKLY_LIMIT, 
@@ -38,7 +36,7 @@ class Database:
         self.cache = {}
         self.cache_timeout = {}
         self.cache_max_age = 60  # 缓存过期时间(秒)
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
         self.connect()
         self.create_tables()
         self.check_db_version()
@@ -165,6 +163,8 @@ class Database:
                 0: self._upgrade_to_v1,
                 1: self._upgrade_to_v2,
                 2: self._upgrade_to_v3,
+                3: self._upgrade_to_v4,
+                4: self._upgrade_to_v5,
                 # 添加新的升级版本
             }
             
@@ -247,6 +247,56 @@ class Database:
         self.conn.commit()
         logger.info("成功升级数据库到版本3：添加数学习题答案和解释字段")
 
+    def _upgrade_to_v4(self):
+        """升级到版本4：添加难度字段，用于计算奖励分钟数"""
+        c = self.conn.cursor()
+        
+        # 检查math_exercises表的字段
+        c.execute("PRAGMA table_info(math_exercises)")
+        columns = {column[1]: column for column in c.fetchall()}
+        
+        # 检查并添加难度字段
+        if 'difficulty' not in columns:
+            c.execute("ALTER TABLE math_exercises ADD COLUMN difficulty INTEGER DEFAULT 2")
+            
+        # 为已有记录设置默认难度级别，前5题默认难度2，最后一题(竞赛题)难度4
+        c.execute("""
+            UPDATE math_exercises 
+            SET difficulty = 
+                CASE 
+                    WHEN id % 6 = 0 OR id = (
+                        SELECT MAX(id) FROM math_exercises WHERE date = math_exercises.date
+                    ) THEN 4
+                    ELSE 2
+                END
+            WHERE difficulty IS NULL
+        """)
+        
+        self.conn.commit()
+        logger.info("成功升级数据库到版本4：添加难度字段，用于计算奖励分钟数")
+
+    def _upgrade_to_v5(self):
+        """升级到版本5：添加std_question字段，用于标准化比较"""
+        c = self.conn.cursor()
+        
+        # 检查是否已有std_question列
+        c.execute("PRAGMA table_info(math_exercises)")
+        columns = {column[1]: column for column in c.fetchall()}
+        
+        if 'std_question' not in columns:
+            # 添加std_question列
+            c.execute("ALTER TABLE math_exercises ADD COLUMN std_question TEXT")
+            
+            # 填充标准化题目数据
+            c.execute("SELECT id, question FROM math_exercises")
+            for row in c.fetchall():
+                id, question = row
+                std_question = question.strip().replace('\n', '').replace(' ', '')
+                c.execute("UPDATE math_exercises SET std_question = ? WHERE id = ?", (std_question, id))
+                
+        self.conn.commit()
+        logger.info("成功升级数据库到版本5：添加std_question字段，用于标准化比较")
+
     def _get_cache_key(self, func_name, *args):
         """生成缓存键"""
         return f"{func_name}:{':'.join(str(arg) for arg in args)}"
@@ -281,36 +331,42 @@ class Database:
                 del self.cache[k]
                 del self.cache_timeout[k]
 
-    def execute_query(self, query, params=(), fetchone=False, commit=False):
-        """执行SQL查询"""
+    async def execute_query(self, query, params=(), fetchone=False, commit=False):
+        """异步执行SQL查询"""
         # 确保数据库连接有效
         if self.conn is None:
             self.reconnect()
-        
-        with self._lock:
+            
+        async with self._lock:
             try:
-                c = self.conn.cursor()
-                c.execute(query, params)
-                
-                if commit:
-                    self.conn.commit()
-                    
-                if fetchone:
-                    return c.fetchone()
-                else:
-                    return c.fetchall()
+                # 在异步环境中使用同步API，使用to_thread
+                result = await asyncio.to_thread(self._execute_query_sync, query, params, fetchone, commit)
+                return result
             except sqlite3.Error as e:
                 if commit:
-                    self.conn.rollback()
+                    await asyncio.to_thread(self.conn.rollback)
                 logger.error(f"执行查询失败: {query}, 错误: {e}")
                 raise
 
-    def add_session(self, start, end, duration, game_name="Minecraft", note=None):
+    def _execute_query_sync(self, query, params=(), fetchone=False, commit=False):
+        """同步执行SQL查询(内部使用)"""
+        c = self.conn.cursor()
+        c.execute(query, params)
+        
+        if commit:
+            self.conn.commit()
+            
+        if fetchone:
+            return c.fetchone()
+        else:
+            return c.fetchall()
+
+    async def add_session(self, start, end, duration, game_name="Minecraft", note=None):
         """添加游戏Session记录"""
         try:
             query = "INSERT INTO game_sessions (start_time, end_time, duration, game, note) VALUES (?, ?, ?, ?, ?)"
             params = (start, end, duration, game_name, note)
-            result = self.execute_query(query, params, commit=True)
+            result = await self.execute_query(query, params, commit=True)
             
             # 清除相关缓存
             self._invalidate_cache("get_sessions")
@@ -321,7 +377,7 @@ class Database:
             logger.error(f"添加Session记录错误: {e}")
             raise
 
-    def get_sessions(self, week_start=None):
+    async def get_sessions(self, week_start=None):
         """获取Session记录"""
         cache_key = self._get_cache_key("get_sessions", week_start)
         cached = self._get_cached_result(cache_key)
@@ -337,14 +393,14 @@ class Database:
                 query = "SELECT * FROM game_sessions ORDER BY start_time DESC"
                 params = ()
                 
-            result = self.execute_query(query, params)
+            result = await self.execute_query(query, params)
             self._cache_result(cache_key, result)
             return result
         except Exception as e:
             logger.error(f"获取Session记录错误: {e}")
             raise
 
-    def delete_session(self, session_id):
+    async def delete_session(self, session_id):
         """删除一个游戏Session记录
         
         Args:
@@ -355,7 +411,7 @@ class Database:
         """
         try:
             query = "DELETE FROM game_sessions WHERE id = ?"
-            self.execute_query(query, (session_id,), commit=True)
+            await self.execute_query(query, (session_id,), commit=True)
             
             # 清除相关缓存
             self._invalidate_cache("get_sessions")
@@ -367,7 +423,7 @@ class Database:
             logger.error(f"删除Session记录错误: {e}")
             raise
 
-    def get_week_total(self, week_start):
+    async def get_week_total(self, week_start):
         """获取每周总时长和额外时间"""
         cache_key = self._get_cache_key("get_week_total", week_start)
         cached = self._get_cached_result(cache_key)
@@ -379,12 +435,12 @@ class Database:
             
             # 获取总时长
             query1 = "SELECT SUM(duration) FROM game_sessions WHERE start_time>=? AND start_time<?"
-            sum_result = self.execute_query(query1, (week_start, week_end), fetchone=True)
+            sum_result = await self.execute_query(query1, (week_start, week_end), fetchone=True)
             sum_value = sum_result[0] if sum_result and sum_result[0] else 0
             
             # 获取额外时间
             query2 = "SELECT extra_minutes FROM weekly_extra_time WHERE week_start=?"
-            extra_result = self.execute_query(query2, (week_start,), fetchone=True)
+            extra_result = await self.execute_query(query2, (week_start,), fetchone=True)
             extra_value = extra_result[0] if extra_result else 0
             
             result = (sum_value, extra_value)
@@ -394,11 +450,11 @@ class Database:
             logger.error(f"获取每周总计错误: {e}")
             raise
 
-    def add_weekly_extra_time(self, week_start, minutes):
+    async def add_weekly_extra_time(self, week_start, minutes):
         """添加每周额外游戏时间"""
         try:
             query = "INSERT OR REPLACE INTO weekly_extra_time (week_start, extra_minutes) VALUES (?, ?)"
-            self.execute_query(query, (week_start, minutes), commit=True)
+            await self.execute_query(query, (week_start, minutes), commit=True)
             
             # 清除相关缓存
             self._invalidate_cache("get_week_total")
@@ -406,12 +462,12 @@ class Database:
             logger.error(f"添加每周额外时间错误: {e}")
             raise
 
-    def get_today_math_exercises(self):
+    async def get_today_math_exercises(self):
         """获取今天的数学练习记录"""
         try:
             today = datetime.date.today().strftime("%Y-%m-%d")
             query = "SELECT * FROM math_exercises WHERE date=? ORDER BY id"
-            result = self.execute_query(query, (today,))
+            result = await self.execute_query(query, (today,))
             # 打印每条记录的详细信息
             for row in result:
                 logger.info(f"[DEBUG] 数学练习记录: id={row[0]}, date={row[1]}, question={row[2]}, answer={row[3]}, is_correct={row[4]}, reward={row[5]}, is_gpt={row[7]}")
@@ -420,98 +476,100 @@ class Database:
             logger.error(f"获取今天数学练习错误: {e}")
             raise
 
-    def add_math_exercise(self, question, answer, is_correct, reward_minutes, is_gpt=0):
-        """添加数学练习记录"""
+    def add_math_exercise(self, question, answer, is_correct, reward_minutes, explanation, is_gpt=0, difficulty=None):
+        """添加数学练习记录
+        
+        Args:
+            question: 题目文本
+            answer: 回答文本
+            is_correct: 是否正确 (1/0)
+            reward_minutes: 奖励分钟数
+            explanation: 解释文本
+            is_gpt: 是否GPT生成 (1/0)
+            difficulty: 难度 (1-4，默认2)
+        
+        Returns:
+            添加的记录ID
+        """
         try:
-            # 检查是否已存在相同题目的记录
+            today = datetime.date.today().strftime("%Y-%m-%d")
+            # 标准化题目文本，防止重复
+            std_question = question.strip().replace('\n', '').replace(' ', '').replace('\r', '')
+            # 原始题目，只去除前后空白
+            original_question = question.strip()
+            
+            # 记录操作日志
+            logger.debug(f"添加数学练习记录：原始题目={original_question[:30]}..., 标准化后={std_question[:30]}...")
+            
+            # 如果未提供难度，使用默认值2
+            if difficulty is None:
+                difficulty = 2
+            # 确保难度为整数
+            try:
+                difficulty = int(difficulty)
+            except (ValueError, TypeError):
+                logger.warning(f"难度值转换整数失败 '{difficulty}'，使用默认值2")
+                difficulty = 2
+                
+            logger.debug(f"添加数学练习记录：problem={original_question[:30]}..., 难度={difficulty}")
+            
+            # 首先检查今天是否已有相同的题目记录（使用标准化后的题目进行比较）
             c = self.conn.cursor()
             c.execute(
-                "SELECT id FROM math_exercises WHERE date=date('now') AND question=?",
-                (question,)
-            )
-            existing = c.fetchone()
-            
-            if existing:
-                # 更新现有记录
-                try:
-                    c.execute(
-                        """UPDATE math_exercises 
-                        SET answer=?, is_correct=?, reward_minutes=?, is_gpt=?
-                        WHERE id=?""",
-                        (answer, is_correct, reward_minutes, is_gpt, existing[0])
-                    )
-                    logger.info(f"更新数学练习记录: question={question}, answer={answer}, is_correct={is_correct}, reward={reward_minutes}, is_gpt={is_gpt}")
-                except sqlite3.Error as e:
-                    logger.error(f"更新数学练习记录失败: {str(e)}")
-                    self.conn.rollback()
-                    return False
-            else:
-                # 插入新记录
-                try:
-                    c.execute(
-                        """INSERT INTO math_exercises 
-                        (date, question, answer, is_correct, reward_minutes, is_gpt)
-                        VALUES (date('now'), ?, ?, ?, ?, ?)""",
-                        (question, answer, is_correct, reward_minutes, is_gpt)
-                    )
-                    logger.info(f"添加数学练习记录: question={question}, answer={answer}, is_correct={is_correct}, reward={reward_minutes}, is_gpt={is_gpt}")
-                except sqlite3.IntegrityError:
-                    # 可能是并发操作导致的唯一约束冲突，尝试更新
-                    logger.warning(f"插入数学练习记录失败，尝试更新: question={question}")
-                    c.execute(
-                        "SELECT id FROM math_exercises WHERE date=date('now') AND question=?",
-                        (question,)
-                    )
-                    retry_existing = c.fetchone()
-                    if retry_existing:
-                        c.execute(
-                            """UPDATE math_exercises 
-                            SET answer=?, is_correct=?, reward_minutes=?, is_gpt=?
-                            WHERE id=?""",
-                            (answer, is_correct, reward_minutes, is_gpt, retry_existing[0])
-                        )
-                        logger.info(f"重试更新数学练习记录成功: question={question}")
-                    else:
-                        logger.error("重试查找记录失败，无法更新")
-                        self.conn.rollback()
-                        return False
-                except sqlite3.Error as e:
-                    logger.error(f"插入数学练习记录失败: {str(e)}")
-                    self.conn.rollback()
-                    return False
-            
-            self.conn.commit()
-            
-            # 验证更新
-            c.execute(
-                "SELECT is_correct, reward_minutes FROM math_exercises WHERE date=date('now') AND question=?",
-                (question,)
+                "SELECT id FROM math_exercises WHERE date=date('now') AND std_question=? AND is_gpt=?",
+                (std_question, is_gpt)
             )
             result = c.fetchone()
-            if result:
-                logger.info(f"验证数据库更新: is_correct={result[0]}, reward={result[1]}")
             
-            # 清除相关缓存
+            if result:
+                # 如果题目已存在，更新记录
+                exercise_id = result[0]
+                logger.info(f"题目已存在，更新记录ID {exercise_id}（标准化后: {std_question[:30]}...）")
+                c.execute(
+                    """UPDATE math_exercises
+                        SET question=?, std_question=?, answer=?, is_correct=?, reward_minutes=?, explanation=?, difficulty=?
+                        WHERE id=?""",
+                    (original_question, std_question, answer, is_correct, reward_minutes, explanation, difficulty, exercise_id)
+                )
+                logger.debug(f"更新题目ID {exercise_id} 的难度为 {difficulty}")
+            else:
+                # 否则插入新记录，使用原始题目和标准化题目
+                logger.info(f"插入新题目（标准化后: {std_question[:30]}...）")
+                c.execute(
+                    """INSERT INTO math_exercises 
+                        (date, question, std_question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (today, original_question, std_question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty)
+                )
+                exercise_id = c.lastrowid
+                logger.debug(f"插入新题目ID {exercise_id} 的难度为 {difficulty}")
+                
+            self.conn.commit()
+            
+            # 清除缓存
             self._invalidate_cache("get_today_math_exercises")
             self._invalidate_cache("get_today_math_reward")
-            return True
+            self._invalidate_cache("get_today_gpt_questions")
+            
+            return exercise_id
         except Exception as e:
-            logger.error(f"添加数学练习记录失败: {str(e)}")
-            return False
+            self.conn.rollback()
+            logger.error(f"添加数学练习记录失败: {e}")
+            raise
 
-    def get_today_math_reward(self):
+    async def get_today_math_reward(self):
         """获取今天通过数学练习获得的奖励分钟数"""
         try:
             today = datetime.date.today().strftime("%Y-%m-%d")
             query = "SELECT SUM(reward_minutes) FROM math_exercises WHERE date=? AND is_correct=1"
-            result = self.execute_query(query, (today,), fetchone=True)
+            result = await self.execute_query(query, (today,), fetchone=True)
             
             reward = result[0] if result and result[0] else 0
             logger.info(f"[DEBUG] 从数据库获取数学奖励: {reward}")
             
             # 打印所有正确答题的记录
             check_query = "SELECT id, question, answer, is_correct, reward_minutes FROM math_exercises WHERE date=? AND is_correct=1"
-            correct_records = self.execute_query(check_query, (today,))
+            correct_records = await self.execute_query(check_query, (today,))
             for record in correct_records:
                 logger.info(f"[DEBUG] 正确答题记录: id={record[0]}, question={record[1]}, answer={record[2]}, is_correct={record[3]}, reward={record[4]}")
             
@@ -520,7 +578,7 @@ class Database:
             logger.error(f"获取今天数学奖励错误: {e}")
             raise
 
-    def get_today_gpt_questions(self):
+    async def get_today_gpt_questions(self):
         """获取今天的GPT生成题目"""
         cache_key = self._get_cache_key("get_today_gpt_questions")
         cached = self._get_cached_result(cache_key)
@@ -529,8 +587,23 @@ class Database:
             
         try:
             today = datetime.date.today().strftime("%Y-%m-%d")
-            query = "SELECT * FROM math_exercises WHERE date=? AND is_gpt=1"
-            result = self.execute_query(query, (today,))
+            query = "SELECT * FROM math_exercises WHERE date=? AND is_gpt=1 ORDER BY id"
+            result = await self.execute_query(query, (today,))
+            
+            # 记录所有题目的难度和标准化处理
+            if result:
+                difficulties = []
+                for i, row in enumerate(result):
+                    # difficulty在索引8
+                    diff = row[8] if len(row) > 8 and row[8] is not None else None
+                    difficulties.append(diff)
+                    
+                    # 记录原始题目和标准化题目
+                    raw_question = row[2]
+                    std_question = raw_question.strip().replace('\n', '').replace(' ', '').replace('\r', '')
+                    logger.debug(f"题目 {i+1}: ID={row[0]}, 难度={diff}, 标准化前={raw_question[:30]}..., 标准化后={std_question[:30]}...")
+                
+                logger.info(f"从数据库加载的题目难度: {difficulties}")
             
             self._cache_result(cache_key, result)
             return result
@@ -561,8 +634,8 @@ class Database:
                     explanation = explanations[i] if explanations and i < len(explanations) else None
                     
                     self.conn.execute(
-                        "INSERT INTO math_exercises (date, question, answer, explanation, is_gpt) VALUES (?, ?, ?, ?, 1)",
-                        (today, q, answer, explanation)
+                        "INSERT INTO math_exercises (date, question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty) VALUES (?, ?, ?, ?, ?, ?, 1, 2)",
+                        (today, q, answer, None, None, explanation)
                     )
             
             # 清除相关缓存
@@ -571,50 +644,67 @@ class Database:
             logger.error(f"缓存GPT题目错误: {e}")
             raise
 
-    def clear_today_gpt_questions(self):
+    async def clear_today_gpt_questions(self):
         """清除今天的GPT生成题目缓存"""
         try:
             today = datetime.date.today().strftime("%Y-%m-%d")
+            
+            # 先获取今天的题目，看看有多少会被删除
+            query_check = "SELECT COUNT(*) FROM math_exercises WHERE date=?"
+            count_result = await self.execute_query(query_check, (today,), fetchone=True)
+            count = count_result[0] if count_result else 0
+            
+            # 记录删除操作
+            logger.info(f"即将删除今日所有数学练习记录: {today}, 共{count}条")
+            
             # 清除所有今日记录，包括用户回答的记录
             query = "DELETE FROM math_exercises WHERE date=?"
-            self.execute_query(query, (today,), commit=True)
-            logger.info(f"[DEBUG] 清除今日所有数学练习记录: {today}")
+            await self.execute_query(query, (today,), commit=True)
+            
+            # 再次检查，确保删除成功
+            query_check = "SELECT COUNT(*) FROM math_exercises WHERE date=?"
+            count_result = await self.execute_query(query_check, (today,), fetchone=True)
+            count_after = count_result[0] if count_result else 0
+            logger.info(f"[DEBUG] 清除今日所有数学练习记录完成: 删除前={count}, 删除后={count_after}")
             
             # 清除相关缓存
             self._invalidate_cache("get_today_math")
             self._invalidate_cache("get_today_math_exercises")
             self._invalidate_cache("get_today_math_reward")
             self._invalidate_cache("get_today_gpt_questions")
+            
+            # 返回删除的记录数
+            return count
         except Exception as e:
             logger.error(f"清除GPT题目缓存错误: {e}")
             raise
 
-    def get_cached_explanation(self, question, wrong_answer):
+    async def get_cached_explanation(self, question, wrong_answer):
         """从缓存中获取解释"""
         try:
             query = "SELECT explanation FROM math_explanations WHERE question=? AND answer=?"
-            result = self.execute_query(query, (question, wrong_answer), fetchone=True)
+            result = await self.execute_query(query, (question, wrong_answer), fetchone=True)
             return result[0] if result else None
         except Exception as e:
             logger.error(f"获取缓存解释错误: {e}")
             return None  # 即使出错也返回None，让调用者能继续工作
 
-    def cache_explanation(self, question, wrong_answer, explanation):
+    async def cache_explanation(self, question, wrong_answer, explanation):
         """缓存解释"""
         try:
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             query = "INSERT INTO math_explanations (question, answer, explanation, created_at) VALUES (?, ?, ?, ?)"
-            self.execute_query(query, (question, wrong_answer, explanation, now), commit=True)
+            await self.execute_query(query, (question, wrong_answer, explanation, now), commit=True)
         except Exception as e:
             logger.error(f"缓存解释错误: {e}")
             # 这个错误不是致命的，所以不需要抛出异常
 
-    def clear_old_explanations(self, days=7):
+    async def clear_old_explanations(self, days=7):
         """清除旧的解释缓存"""
         try:
             cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
             query = "DELETE FROM math_explanations WHERE created_at < ?"
-            self.execute_query(query, (cutoff,), commit=True)
+            await self.execute_query(query, (cutoff,), commit=True)
         except Exception as e:
             logger.error(f"清除旧解释错误: {e}")
             # 这个错误不是致命的，所以不需要抛出异常
@@ -632,8 +722,8 @@ class Database:
             c.execute("UPDATE math_exercises SET answer = '（无标准答案）' WHERE answer IS NULL AND is_gpt = 1")
             c.execute("UPDATE math_exercises SET explanation = '（无解释）' WHERE explanation IS NULL AND is_gpt = 1")
             self.conn.commit()
-            # 清除所有解释缓存
-            self.clear_old_explanations(0)
+            # 清除所有解释缓存 - 创建异步任务但不等待它
+            asyncio.create_task(self.clear_old_explanations(0))
             # 运行VACUUM来压缩数据库
             c.execute("VACUUM")
             # 分析数据库以优化查询
@@ -669,7 +759,7 @@ class Database:
             return True
         return False
 
-    def get_setting(self, key, default=None):
+    async def get_setting(self, key, default=None):
         """获取设置值"""
         try:
             # 首先检查settings表是否存在
@@ -688,7 +778,7 @@ class Database:
                 
             # 获取设置值
             query = "SELECT value FROM settings WHERE key=?"
-            result = self.execute_query(query, (key,), fetchone=True)
+            result = await self.execute_query(query, (key,), fetchone=True)
             
             if result:
                 return result[0]
@@ -697,7 +787,7 @@ class Database:
             logger.error(f"获取设置值错误: {e}")
             return default
             
-    def set_setting(self, key, value):
+    async def set_setting(self, key, value):
         """设置值"""
         try:
             # 首先检查settings表是否存在
@@ -716,9 +806,11 @@ class Database:
             # 更新或插入设置
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             query = "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)"
-            self.execute_query(query, (key, value, now), commit=True)
+            await self.execute_query(query, (key, value, now), commit=True)
             
             return True
         except Exception as e:
             logger.error(f"设置值错误: {e}")
-            return False 
+            return False
+
+     

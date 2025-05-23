@@ -1,17 +1,16 @@
-import sys
 import asyncio
 import datetime
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, 
     QLabel, QPushButton, QComboBox, QTreeWidget, QTreeWidgetItem,
-    QFrame, QProgressBar, QMessageBox, QSizePolicy
+    QFrame, QMessageBox
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from logic.constants import (
-    PADDING_SMALL, PADDING_MEDIUM, PADDING_LARGE,
-    DEFAULT_WEEKLY_LIMIT, MAX_WEEKLY_LIMIT
+    PADDING_MEDIUM,
+    DEFAULT_WEEKLY_LIMIT
 )
 
 class HistoryPanel(QDialog):
@@ -24,15 +23,16 @@ class HistoryPanel(QDialog):
         self.game_limiter = game_limiter
         
         # 设置窗口
-        self.setWindowTitle("游戏历史记录")
-        self.resize(800, 600)
+        self.setWindowTitle("Game History")
+        self.resize(900, 600)
+        self.setMinimumSize(800, 500)
         self.setModal(True)
         
         # 设置UI
         self.setup_ui()
         
-        # 加载历史记录
-        self.load_history()
+        # 加载数据
+        asyncio.create_task(self.async_load_data())
         
     def setup_ui(self):
         """设置UI组件"""
@@ -43,11 +43,13 @@ class HistoryPanel(QDialog):
         control_layout = QHBoxLayout()
         
         # 标题
-        title_label = QLabel("游戏历史记录")
+        title_label = QLabel("Game History")
         title_font = QFont()
         title_font.setPointSize(14)
         title_font.setBold(True)
+        title_font.setItalic(True)
         title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(title_label)
         
         # 弹性空间
@@ -55,10 +57,10 @@ class HistoryPanel(QDialog):
         
         # 周选择
         week_layout = QHBoxLayout()
-        week_layout.addWidget(QLabel("选择周:"))
+        week_layout.addWidget(QLabel("Select Week:"))
         
         # 获取可选的周
-        self.weeks = self.get_available_weeks()
+        self.weeks = asyncio.create_task(self.get_available_weeks())
         self.week_combo = QComboBox()
         self.week_combo.addItems(self.weeks)
         self.week_combo.setCurrentIndex(0)
@@ -77,7 +79,7 @@ class HistoryPanel(QDialog):
         
         # 历史记录列表
         self.history_tree = QTreeWidget()
-        self.history_tree.setHeaderLabels(["ID", "开始时间", "结束时间", "时长(分钟)", "游戏", "备注"])
+        self.history_tree.setHeaderLabels(["ID", "Start Time", "End Time", "Duration (minutes)", "Game", "Note"])
         self.history_tree.setAlternatingRowColors(True)
         
         # 设置列宽
@@ -97,13 +99,13 @@ class HistoryPanel(QDialog):
         stats_layout = QHBoxLayout(stats_frame)
         
         # 统计信息标签
-        self.total_label = QLabel("本周总时长: 0 分钟")
+        self.total_label = QLabel("Total Duration This Week: 0 minutes")
         stats_layout.addWidget(self.total_label)
         
-        self.extra_label = QLabel("额外奖励: 0 分钟")
+        self.extra_label = QLabel("Extra Reward: 0 minutes")
         stats_layout.addWidget(self.extra_label)
         
-        self.remaining_label = QLabel("剩余时间: 0 分钟")
+        self.remaining_label = QLabel("Remaining Time: 0 minutes")
         stats_layout.addWidget(self.remaining_label)
         
         main_layout.addWidget(stats_frame)
@@ -111,23 +113,23 @@ class HistoryPanel(QDialog):
         # 底部按钮框架
         button_layout = QHBoxLayout()
         
-        self.refresh_button = QPushButton("刷新")
+        self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.load_history)
         button_layout.addWidget(self.refresh_button)
         
         # 弹性空间
         button_layout.addStretch()
         
-        self.close_button = QPushButton("关闭")
+        self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.close)
         button_layout.addWidget(self.close_button)
         
         main_layout.addLayout(button_layout)
         
-    def get_available_weeks(self):
+    async def get_available_weeks(self):
         """获取可选的周列表"""
         # 获取第一条记录的时间
-        sessions = self.game_limiter.get_sessions()
+        sessions = await self.game_limiter.get_sessions()
         weeks = []
         
         if not sessions:
@@ -163,39 +165,91 @@ class HistoryPanel(QDialog):
             
         return weeks
         
+    async def async_load_data(self):
+        """加载历史数据"""
+        try:
+            # 获取会话记录
+            self.all_sessions = await self.game_limiter.get_sessions()
+            
+            # 根据当前筛选填充树视图
+            await self.filter_and_display_sessions()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load history: {str(e)}")
+    
+    async def filter_and_display_sessions(self):
+        """根据筛选条件显示会话"""
+        self.history_tree.clear()
+        
+        if not self.all_sessions:
+            return
+            
+        # 获取当前筛选器值
+        filter_option = self.week_combo.currentText()
+        
+        # 准备要显示的会话
+        filtered_sessions = []
+        
+        if filter_option == "All Records":
+            filtered_sessions = self.all_sessions
+        elif filter_option == "This Week Records":
+            today = datetime.date.today()
+            week_start = today - datetime.timedelta(days=today.weekday())
+            
+            used, extra = await self.game_limiter.db.get_week_total(week_start.strftime("%Y-%m-%d"))
+            
+            # 记录周总计
+            self.add_summary_item(week_start.strftime("%Y-%m-%d"), used, extra)
+            
+            # 筛选本周会话
+            for session in self.all_sessions:
+                session_date = session[1].split(" ")[0]  # 取start_time的日期部分
+                if session_date >= week_start.strftime("%Y-%m-%d"):
+                    filtered_sessions.append(session)
+        elif filter_option == "Last Week Records":
+            today = datetime.date.today()
+            this_week_start = today - datetime.timedelta(days=today.weekday())
+            last_week_start = (this_week_start - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+            this_week_start_str = this_week_start.strftime("%Y-%m-%d")
+            
+            # 筛选上周会话
+            for session in self.all_sessions:
+                session_date = session[1].split(" ")[0]  # 取start_time的日期部分
+                if session_date >= last_week_start and session_date < this_week_start_str:
+                    filtered_sessions.append(session)
+        
+        # 添加会话到树视图
+        for session in filtered_sessions:
+            self.add_session_item(session)
+    
+    def add_summary_item(self, week_start, used, extra):
+        """添加周总计项"""
+        item = QTreeWidgetItem([
+            "Total",
+            week_start,
+            "",
+            str(used),
+            "",
+            f"Total Duration This Week: {used} minutes, Extra Reward: {extra} minutes"
+        ])
+        self.history_tree.addTopLevelItem(item)
+    
+    def add_session_item(self, session):
+        """添加会话项"""
+        sid, start_time, end_time, duration, game, note = session
+        item = QTreeWidgetItem([
+            str(sid),
+            start_time,
+            end_time or "In Progress",
+            str(duration or 0),
+            game or "Unknown",
+            note or ""
+        ])
+        self.history_tree.addTopLevelItem(item)
+    
     def load_history(self):
         """加载历史记录"""
-        try:
-            # 清空树
-            self.history_tree.clear()
-            
-            # 获取选中的周
-            selected_week = self.week_combo.currentText()
-            if not selected_week:
-                return
-                
-            # 获取会话记录
-            sessions = self.game_limiter.get_sessions(selected_week)
-            
-            # 添加到树
-            for session in sessions:
-                sid, start_time, end_time, duration, game, note = session
-                item = QTreeWidgetItem([
-                    str(sid),
-                    start_time,
-                    end_time or "进行中",
-                    str(duration or 0),
-                    game or "未知",
-                    note or ""
-                ])
-                self.history_tree.addTopLevelItem(item)
-                
-            # 更新统计信息
-            self.update_statistics(selected_week)
-            
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"加载历史记录失败: {str(e)}")
-        
+        asyncio.create_task(self.async_load_data())
+    
     def update_statistics(self, week_start):
         """更新统计信息"""
         try:
@@ -207,12 +261,46 @@ class HistoryPanel(QDialog):
             remaining = max(0, weekly_limit - used)
             
             # 更新标签
-            self.total_label.setText(f"本周总时长: {used} 分钟")
-            self.extra_label.setText(f"额外奖励: {extra} 分钟")
-            self.remaining_label.setText(f"剩余时间: {remaining} 分钟")
+            self.total_label.setText(f"Total Duration This Week: {used} minutes")
+            self.extra_label.setText(f"Extra Reward: {extra} minutes")
+            self.remaining_label.setText(f"Remaining Time: {remaining} minutes")
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"更新统计信息失败: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to update statistics: {str(e)}")
+    
+    async def delete_session(self):
+        """删除所选会话"""
+        selected_items = self.history_tree.selectedItems()
+        if not selected_items:
+            return
+            
+        if selected_items[0].parent() is None:
+            # 不能删除摘要项
+            QMessageBox.warning(self, "Warning", "Cannot delete summary item")
+            return
+            
+        # 获取会话ID
+        session_id = int(selected_items[0].text(0))
+        
+        # 确认删除
+        confirm = QMessageBox.question(
+            self, 
+            "Confirm Delete", 
+            f"Are you sure you want to delete the session record with ID {session_id}? This operation cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            try:
+                # 删除会话
+                await self.game_limiter.db.delete_session(session_id)
+                
+                # 重新加载数据
+                await self.async_load_data()
+                
+                QMessageBox.information(self, "Success", "Session record deleted")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete session record: {str(e)}")
     
     def closeEvent(self, event):
         """窗口关闭事件"""

@@ -7,7 +7,7 @@ import openai
 import re
 from dotenv import load_dotenv
 from logic.database import Database, get_week_start
-from logic.constants import MATH_REWARD_PER_QUESTION, MAX_DAILY_MATH_QUESTIONS
+from logic.constants import MATH_REWARD_PER_QUESTION, MAX_DAILY_MATH_QUESTIONS, MATH_DIFFICULTY_REWARDS
 
 # 配置日志
 logger = logging.getLogger('math_exercises')
@@ -32,55 +32,106 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 class MathExercises:
     def __init__(self):
         self.db = Database()
-        self.current_questions = []
-        self.current_answers = []
-        self.current_explanations = []
-        self.current_question_index = 0
+        # 使用单一数据结构存储题目
+        self.questions = []
+        self.current_index = 0
         self.api_error = None
-        self.load_cached_questions()
         
-    def load_cached_questions(self):
+    async def initialize(self):
+        """Async initialization to be called after construction"""
+        await self.load_cached_questions()
+        return self
+        
+    async def load_cached_questions(self):
         """从数据库加载缓存的问题"""
         try:
-            cached_questions = self.db.get_today_gpt_questions()
-            if cached_questions and len(cached_questions) > 0:
-                logger.info(f"加载缓存的题目，共{len(cached_questions)}道")
-                
-                # 重置现有数据
-                self.current_questions = []
-                self.current_answers = []
-                self.current_explanations = []
-                
-                # 从缓存中提取数据
-                for q in cached_questions:
-                    self.current_questions.append(q[2])  # question在索引2
+            cached_questions = await self.db.get_today_gpt_questions()
+            # 记录加载到的题目数量
+            logger.info(f"从数据库加载题目，共{len(cached_questions)}条记录")
+            
+            # 只保留每道题的最新一条（按question分组，取id最大）
+            latest_questions = {}
+            seen_questions = set()  # 跟踪已处理的题目，防止重复
+            
+            for q in cached_questions:
+                try:
+                    # 确保question是标准化比较的
+                    if q[2] is None:  # 检查question是否为None
+                        logger.warning(f"跳过无效题目记录ID={q[0]}")
+                        continue
+                        
+                    std_question = q[2].strip().replace('\n', '').replace(' ', '').replace('\r', '')
                     
-                    # 如果有答案和解释也提取
-                    if len(q) > 3 and q[3]:
-                        self.current_answers.append(q[3])
-                    else:
-                        self.current_answers.append("（无答案）")
+                    # 检查是否有重复题目（即使标准化后也相同）
+                    if std_question in seen_questions:
+                        logger.debug(f"跳过重复题目ID={q[0]}, 标准化后={std_question[:20]}...")
+                        continue
                         
-                    if len(q) > 6 and q[6]:
-                        self.current_explanations.append(q[6])
-                    else:
-                        self.current_explanations.append("（无解释）")
+                    # 使用标准化后的题目作为键，避免重复
+                    if std_question not in latest_questions or q[0] > latest_questions[std_question][0]:
+                        latest_questions[std_question] = q
+                        seen_questions.add(std_question)
+                except Exception as e:
+                    logger.error(f"处理题目记录出错 ID={q[0] if len(q) > 0 else 'unknown'}: {e}")
+                    continue
+                    
+            if latest_questions:
+                logger.info(f"去重后加载的题目，共{len(latest_questions)}道")
+                self.questions = []
+                
+                for q in latest_questions.values():
+                    try:
+                        difficulty = None
+                        if len(q) > 8:
+                            difficulty = q[8]  # difficulty在索引8
+                            logger.debug(f"从数据库加载题目，ID={q[0]}，难度={difficulty}")
                         
-                self.current_question_index = 0
-                logger.info(f"成功加载缓存题目: {len(self.current_questions)}道")
+                        # 添加到题目列表，确保所有字段都有有效值
+                        question_obj = {
+                            "question": q[2] if q[2] else "（无题目内容）",  # 使用原始格式
+                            "answer": q[3] if len(q) > 3 and q[3] else "（无答案）",
+                            "explanation": q[6] if len(q) > 6 and q[6] else "（无解释）",
+                            "difficulty": difficulty if difficulty is not None else 2,  # 默认难度2
+                            "is_correct": q[4] if len(q) > 4 else None
+                        }
+                        self.questions.append(question_obj)
+                    except Exception as e:
+                        logger.error(f"添加题目到列表出错 ID={q[0] if len(q) > 0 else 'unknown'}: {e}")
+                        continue
+                    
+                # 确保至少有6道题
+                if len(self.questions) < 6:
+                    logger.warning(f"加载题目数量不足，只有{len(self.questions)}道，应为6道")
+                    
+                # 设置当前索引为第一个未回答的问题
+                self.current_index = 0
+                for i, q in enumerate(self.questions):
+                    if q["is_correct"] is None:
+                        self.current_index = i
+                        break
+                logger.info(f"成功加载缓存题目: {len(self.questions)}道")
+                logger.info(f"加载的题目难度: {[q.get('difficulty') for q in self.questions]}")
             else:
                 logger.info("没有找到缓存的题目")
         except Exception as e:
             logger.error(f"加载缓存题目出错: {str(e)}")
+            logger.exception("详细错误信息:")
+            
+    async def _handle_api_error(self, operation_name, func, *args, **kwargs):
+        """通用错误处理，简化API操作"""
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            error_msg = f"{operation_name}失败: {str(e)}"
+            logger.error(error_msg)
+            self.api_error = error_msg
+            raise
             
     async def generate_questions_async(self):
         """异步生成数学问题"""
-        try:
-            return await self._generate_questions_async(force_regenerate=False)
-        except Exception as e:
-            logger.error(f"异步生成题目失败: {str(e)}")
-            raise
+        return await self._handle_api_error("异步生成题目", self._generate_questions_async, False)
             
+    # 保留兼容性方法，但内部使用异步实现
     def generate_questions(self, callback=None):
         """生成数学问题 (保留兼容性)"""
         if callback:
@@ -103,151 +154,176 @@ class MathExercises:
         try:
             # 检查是否已经有今天的题目，且不强制重新生成
             if not force_regenerate:
-                today_questions = self.db.get_today_gpt_questions()
+                today_questions = await self.db.get_today_gpt_questions()
                 if today_questions:
                     logger.info("今天已有题目，直接加载")
-                    self.current_questions = [q[2] for q in today_questions]  # question在索引2
-                    self.current_answers = [q[3] for q in today_questions]    # answer在索引3
-                    self.current_explanations = [q[6] for q in today_questions]  # explanation在索引6
-                    self.current_question_index = 0
+                    self.questions = []
+                    for q in today_questions:
+                        # 详细记录从数据库加载的题目难度
+                        difficulty = q[8] if len(q) > 8 and q[8] is not None else None
+                        logger.debug(f"从数据库加载题目ID={q[0]}，难度={difficulty}")
+                        
+                        question_obj = {
+                            "question": q[2],  # question在索引2
+                            "answer": q[3] if len(q) > 3 and q[3] else "（无答案）",
+                            "explanation": q[6] if len(q) > 6 and q[6] else "",
+                            "difficulty": difficulty,
+                            "is_correct": q[4]
+                        }
+                        self.questions.append(question_obj)
                     
-                    # 找到第一个未完成的题目
-                    for i, q in enumerate(today_questions):
-                        if q[4] is None:  # is_correct在索引4
-                            self.current_question_index = i
+                    logger.info(f"从数据库加载题目，难度: {[q.get('difficulty') for q in self.questions]}")
+                    
+                    # 设置当前索引为第一个未回答的问题
+                    self.current_index = 0
+                    for i, q in enumerate(self.questions):
+                        if q["is_correct"] is None:
+                            self.current_index = i
                             break
-                    else:
-                        # 如果所有题目都已完成，跳转到最后一题
-                        self.current_question_index = len(today_questions) - 1
-                    
                     return True
-            
+                    
             # 如果没有今天的题目或强制重新生成，生成新题目
             logger.info("开始生成新题目")
-            self.current_questions = []
-            self.current_answers = []
-            self.current_explanations = []
+            self.questions = []
             
             if not openai.api_key:
                 self.api_error = "未设置OpenAI API密钥，请在.env文件中设置OPENAI_API_KEY"
                 logger.error(self.api_error)
                 raise ValueError(self.api_error)
                 
-            # 使用GPT生成5个常规题目
-            regular_prompt = """Generate 5 math questions with the following requirements:
-1. Each question should be in English
-2. Each question should be clear and concise
-3. The answer should be a number
-4. The questions should represent a range of difficulty from mid difficulty to high difficulty
-5. The questions should be suitable for 6th grade Advanced Learning Program (ALP) students
-6. Include a mix of different math topics, such as arithmetic, fractions, decimals, percentages, basic algebra, and geometry
+            # 使用单一prompt生成全部6道题目（5道常规+1道竞赛级）
+            # 添加时间戳以确保每次生成的题目不同
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            all_questions_prompt = f"""
+Generate 6 NEW and UNIQUE math questions with the following requirements:
 
-Return the result in JSON format as follows:
-{
-    "questions": [
-        {
-            "question": "the math question",
-            "answer": "the numerical answer",
-            "explanation": "step-by-step solution explanation"
-        },
-        ... (5 questions total)
-    ]
-}
+1. Each question should be in English.
+2. Each question should be clear and concise.
+3. The answer should be a number.
+4. All questions must be in the style and difficulty of the AMC8 math competition in the United States.
+5. The first 5 questions should cover a range of AMC8 difficulty from easy to hard.
+6. Include a mix of AMC8 topics, such as arithmetic, fractions, decimals, percentages, basic algebra, geometry, combinatorics, and word problems.
+7. Assign a difficulty level from 1-4 for each question, where:
+   - 1: AMC8 easy (comparable to AMC8 Q1-5)
+   - 2: AMC8 medium (comparable to AMC8 Q6-15)
+   - 3: AMC8 hard (comparable to AMC8 Q16-20)
+   - 4: AMC8 very hard/competition level (comparable to AMC8 Q21-25)
+8. The 6th question MUST be AMC8 competition-level difficulty (level 4), similar to the hardest AMC8 questions.
+9. Use authentic AMC8 style and wording, and avoid non-competition or classroom-style questions.
+10. IMPORTANT: Generate COMPLETELY DIFFERENT questions each time. Do not repeat similar patterns or question formats.
+11. IMPORTANT: Keep math notation simple! Use simple notation like x^2 for x squared, x/y for fractions. 
+12. If you must use LaTeX-style notation with $ symbols, use very basic symbols.
+13. AVOID complex LaTeX expressions that children might find difficult to understand.
 
-Please ensure the response is in valid JSON format."""
+Return ONLY a valid JSON object in the following format (do not include any explanation or markdown):
 
-            # 使用GPT生成1个竞赛级难度题目
-            competition_prompt = """Generate 1 competition-level math question with the following requirements:
-1. The question should be in English
-2. It should be challenging and suitable for a talented 6th grade student in an Advanced Learning Program (ALP)
-3. The question should be at the level of math competitions (such as Math Olympiad or MathCounts)
-4. Topics can include advanced problem-solving, creative applications of algebra, advanced geometry, number theory, or combinatorics
-5. The question should require deeper thinking and possibly multiple steps to solve
-6. The answer should be a number
-7. Include a detailed step-by-step solution explanation
+{{
+  "questions": [
+    {{
+      "question": "string",
+      "answer": "number",
+      "difficulty": 1
+    }},
+    ...
+  ]
+}}
 
-Return the result in JSON format as follows:
-{
-    "question": "the competition-level math question",
-    "answer": "the numerical answer",
-    "explanation": "detailed step-by-step solution explanation"
-}
+Current timestamp: {now_str}
+"""
 
-Please ensure the response is in valid JSON format."""
+            # 使用直接格式化的f-string，避免使用.format()方法
+            # 这样已经把now_str嵌入字符串中，不需要额外的格式化
+            formatted_prompt = all_questions_prompt
 
-            # 并行发送两个请求以提高效率
-            regular_task = asyncio.create_task(asyncio.to_thread(
+            # 发送单一请求
+            logger.info("发送单一请求生成全部6道题目")
+            response = await asyncio.to_thread(
                 openai.chat.completions.create,
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "You are a math teacher creating questions for 6th grade students in an Advanced Learning Program. Please return results in JSON format."},
-                    {"role": "user", "content": regular_prompt}
+                    {"role": "system", "content": "You are a math teacher creating questions for 6th grade students in an Advanced Learning Program, with the final question being competition level. Please return results in JSON format."},
+                    {"role": "user", "content": formatted_prompt}
                 ],
-                temperature=0.7
-            ))
+                temperature=1.2
+            )
             
-            competition_task = asyncio.create_task(asyncio.to_thread(
-                openai.chat.completions.create,
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": "You are an expert math competition coach creating challenging problems for talented 6th grade students. Please return results in JSON format."},
-                    {"role": "user", "content": competition_prompt}
-                ],
-                temperature=0.7
-            ))
+            # 解析题目
+            logger.info(f"[DEBUG] OpenAI response: {response.choices[0].message.content}")
+            try:
+                result = json.loads(response.choices[0].message.content)
+            except json.JSONDecodeError as e:
+                logger.error(f"OpenAI返回内容无法解析为JSON: {response.choices[0].message.content}")
+                raise ValueError("OpenAI返回内容不是严格的JSON格式，请检查prompt或网络响应。原始内容已写入日志。")
+            all_questions = result.get("questions", [])
+            logger.info(f"[DEBUG] Generated questions count: {len(all_questions)}")
             
-            # 等待两个任务完成
-            regular_response, competition_response = await asyncio.gather(regular_task, competition_task)
-            
-            # 解析常规题目
-            regular_result = json.loads(regular_response.choices[0].message.content)
-            regular_questions = regular_result.get("questions", [])
-            
-            # 解析竞赛级题目
-            competition_result = json.loads(competition_response.choices[0].message.content)
-            competition_question = {
-                "question": competition_result.get("question", ""),
-                "answer": competition_result.get("answer", ""),
-                "explanation": competition_result.get("explanation", "")
-            }
-            
-            # 确保生成了足够的常规题目
-            if len(regular_questions) < 5:
-                error_msg = f"只生成了{len(regular_questions)}题常规题目，少于要求的5题"
+            # 确保生成了足够的题目
+            if len(all_questions) < 6:
+                error_msg = f"只生成了{len(all_questions)}题，少于要求的6题"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
                 
-            # 提取题目、答案和解释
-            for q in regular_questions:
-                self.current_questions.append(q["question"])
-                self.current_answers.append(q["answer"])
-                # 如果提供了解释，使用提供的解释，否则使用空字符串
-                self.current_explanations.append(q.get("explanation", ""))
-            
-            # 添加竞赛级题目作为最后一题
-            self.current_questions.append(competition_question["question"])
-            self.current_answers.append(competition_question["answer"])
-            self.current_explanations.append(competition_question["explanation"])
+            # 转换为我们的数据结构
+            for q in all_questions:
+                difficulty = q.get("difficulty")
+                logger.debug(f"从GPT获取题目：问题={q['question'][:30]}...，难度={difficulty}")
+                
+                question_obj = {
+                    "question": q["question"],
+                    "answer": q["answer"],
+                    "explanation": "",  # 不生成解释
+                    "difficulty": difficulty,  # 直接使用GPT返回的难度，不设默认值
+                    "is_correct": None
+                }
+                self.questions.append(question_obj)
+                
+            logger.info(f"[DEBUG] total questions to insert: {len(self.questions)}")
             
             # 缓存生成的题目
             today = datetime.date.today().strftime("%Y-%m-%d")
-            await asyncio.to_thread(self.db.clear_today_gpt_questions)
+            await self.db.clear_today_gpt_questions()
             c = self.db.conn.cursor()
             self.db.conn.execute("BEGIN TRANSACTION")
-            for i in range(len(self.current_questions)):
-                logger.info(f"[DEBUG] 写入题目: {self.current_questions[i]}, 答案: {self.current_answers[i]}")
+            
+            # 只插入前6道题
+            for q in self.questions[:6]:                
+                # 确保difficulty是整数值
+                difficulty = q["difficulty"]
+                if difficulty is None:
+                    logger.warning(f"题目缺少难度值，设为默认值2: {q['question'][:30]}...")
+                    difficulty = 2
+                try:
+                    difficulty = int(difficulty)
+                except (ValueError, TypeError):
+                    logger.warning(f"难度值转换整数失败，使用默认值2: {difficulty}")
+                    difficulty = 2
+                # 标准化题目文本，防止后续查找不一致
+                # 同时保留原始题目文本以便显示
+                std_question = q["question"].strip().replace('\n', '').replace(' ', '')
+                original_question = q["question"].strip()  # 保留原始格式，只去除前后空白
+                logger.info(f"[DEBUG] 写入题目: {q['question'][:30]}..., 答案: {q['answer']}, 难度: {difficulty}")
+                
+                # 同时保存原始题目和标准化题目到数据库
+                # 使用question字段存储原始题目，使用std_question字段进行查重
                 c.execute(
-                    "INSERT INTO math_exercises (date, question, answer, explanation, is_gpt) VALUES (?, ?, ?, ?, 1)",
-                    (today, self.current_questions[i], self.current_answers[i], self.current_explanations[i])
+                    """INSERT INTO math_exercises 
+                        (date, question, std_question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (today, original_question, std_question, q["answer"], None, None, "", 1, difficulty)
                 )
             self.db.conn.commit()
-            logger.info("已成功保存题目到数据库")
+            # 检查并清理多余题目，只保留最新6道
+            c.execute("SELECT id FROM math_exercises WHERE date=? AND is_gpt=1 ORDER BY id DESC", (today,))
+            rows = c.fetchall()
+            if len(rows) > 6:
+                for row in rows[6:]:
+                    c.execute("DELETE FROM math_exercises WHERE id=?", (row[0],))
+                self.db.conn.commit()
             
-            # 更新状态
-            self.current_question_index = 0
-            
+            logger.info(f"[DEBUG] 已写入数据库题目数: {len(self.questions)}")
+            self.current_index = 0
             return True
-                
+            
         except Exception as e:
             logger.error(f"生成题目时出错: {e}")
             self.api_error = f"生成题目时出错: {str(e)}"
@@ -255,353 +331,304 @@ Please ensure the response is in valid JSON format."""
     
     def get_current_question(self):
         """获取当前问题"""
-        if not self.current_questions:
+        if not self.questions or self.current_index >= len(self.questions):
             return None
-        if self.current_question_index >= len(self.current_questions):
-            return None
-        return self.current_questions[self.current_question_index]
+        return self.questions[self.current_index]["question"]
     
     def get_current_answer(self):
         """获取当前问题的标准答案"""
-        if not self.current_answers or self.current_question_index >= len(self.current_answers):
+        if not self.questions or self.current_index >= len(self.questions):
             return "（无标准答案）"
-        return self.current_answers[self.current_question_index]
+        return self.questions[self.current_index]["answer"]
     
     def get_current_explanation(self):
         """获取当前问题的解释"""
-        if not self.current_explanations or self.current_question_index >= len(self.current_explanations):
+        if not self.questions or self.current_index >= len(self.questions):
             return "（无解释）"
-        return self.current_explanations[self.current_question_index]
+        return self.questions[self.current_index]["explanation"]
         
     def next_question(self):
         """移动到下一个问题"""
-        if self.current_question_index < len(self.current_questions) - 1:
-            self.current_question_index += 1
+        if self.current_index < len(self.questions) - 1:
+            self.current_index += 1
             return self.get_current_question()
         return None
         
-    def get_completed_count(self):
+    async def get_completed_count(self):
         """获取今天已完成的题目数量"""
-        exercises = self.db.get_today_math_exercises()
+        exercises = await self.db.get_today_math_exercises()
         # 只计算 is_correct 不为 NULL 的记录
         completed = sum(1 for ex in exercises if ex[4] is not None)  # ex[4] 是 is_correct 字段
         return completed
     
     async def check_answer_async(self, question_index, user_answer):
-        """异步检查答案"""
-        if question_index >= len(self.current_questions):
+        """异步检查答案 - 简化版"""
+        if question_index >= len(self.questions):
             raise ValueError("问题索引超出范围")
-            
-        question = self.current_questions[question_index]
-        try:
-            # 获取标准答案
-            standard_answer = self.current_answers[question_index]
-            if not standard_answer:
-                raise ValueError("无法获取标准答案")
-                
-            # 清理答案中的空格
-            user_answer = re.sub(r'\s+', '', user_answer)
-            standard_answer = re.sub(r'\s+', '', standard_answer)
-            
-            # 尝试直接比较
-            try:
-                # 尝试转换为数值进行比较
-                user_num = float(user_answer)
-                standard_num = float(standard_answer)
-                # 允许0.01的误差
-                is_correct = abs(user_num - standard_num) < 0.01
-                reward = MATH_REWARD_PER_QUESTION if is_correct else 0
-                
-                # 记录到数据库
-                await asyncio.to_thread(
-                    self.db.add_math_exercise,
-                    question=question,
-                    answer=user_answer,
-                    is_correct=is_correct,
-                    reward_minutes=reward,
-                    is_gpt=0
-                )
-                
-                return is_correct
-            except ValueError:
-                # 如果无法转换为数值，使用GPT检查
-                pass
-                
-            # 使用GPT检查答案
-            prompt = f"""Please check if the following math answer is correct. Return the result in JSON format as follows:
-{{
-    "is_correct": true/false,  // whether the answer is correct
-    "explanation": "detailed explanation",  // explain why it's correct or wrong
-    "standard_answer": "standard answer"  // the standard answer
-}}
-
-Question: {question}
-Student's answer: {user_answer}
-Standard answer: {standard_answer}
-
-Please ensure the response is in valid JSON format."""
-
-            response = await asyncio.to_thread(
-                openai.chat.completions.create,
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": "You are a math teacher responsible for checking student answers. Please return results in JSON format."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3
-            )
-            
-            # 解析GPT的响应
-            try:
-                result = json.loads(response.choices[0].message.content)
-                is_correct = result.get("is_correct", False)
-                explanation = result.get("explanation", "")
-                reward = MATH_REWARD_PER_QUESTION if is_correct else 0
-                
-                # 记录到数据库
-                await asyncio.to_thread(
-                    self.db.add_math_exercise,
-                    question=question,
-                    answer=user_answer,
-                    is_correct=is_correct,
-                    reward_minutes=reward,
-                    is_gpt=1
-                )
-                
-                # 更新解释
-                if explanation and question_index < len(self.current_explanations):
-                    self.current_explanations[question_index] = explanation
-                
-                return is_correct
-            except json.JSONDecodeError:
-                logger.error(f"GPT返回的不是有效的JSON格式: {response.choices[0].message.content}")
-                raise ValueError("无法解析GPT的响应")
-                
-        except Exception as e:
-            logger.error(f"检查答案时出错: {str(e)}")
-            raise
         
-    def check_answer(self, question_index, user_answer):
-        """检查答案（同步版本，保留兼容性）"""
-        if question_index >= len(self.current_questions):
-            raise ValueError("问题索引超出范围")
-            
-        question = self.current_questions[question_index]
+        question_obj = self.questions[question_index]
+        question = question_obj["question"]
+        standard_answer = question_obj["answer"]
+        difficulty = question_obj["difficulty"]
         
-        # 获取标准答案
-        standard_answer = self.current_answers[question_index]
         if not standard_answer:
             raise ValueError("无法获取标准答案")
-            
+        
         # 清理答案中的空格
+        user_answer = str(user_answer)
+        standard_answer = str(standard_answer)
         user_answer = re.sub(r'\s+', '', user_answer)
         standard_answer = re.sub(r'\s+', '', standard_answer)
         
-        # 尝试直接比较
+        # 尝试直接数值比较
         try:
-            # 尝试转换为数值进行比较
             user_num = float(user_answer)
             standard_num = float(standard_answer)
-            # 允许0.01的误差
             is_correct = abs(user_num - standard_num) < 0.01
-            reward = MATH_REWARD_PER_QUESTION if is_correct else 0
             
-            # 记录到数据库
-            self.db.add_math_exercise(
-                question=question,
-                answer=user_answer,
-                is_correct=is_correct,
-                reward_minutes=reward,
-                is_gpt=0
-            )
+            # 根据难度确定奖励分钟数
+            reward = MATH_DIFFICULTY_REWARDS.get(difficulty, MATH_REWARD_PER_QUESTION) if is_correct else 0
+            logger.info(f"答案检查：难度={difficulty}, 奖励={reward}分钟")
             
-            return is_correct
+            # 更新当前问题对象
+            question_obj["is_correct"] = is_correct
+            
+            # 添加到数据库
+            await self._add_exercise_result(question, user_answer, is_correct, reward)
+            
+            # 如果答案错误，获取解释
+            explanation = ""
+            if not is_correct:
+                explanation = await self._get_explanation(question, user_answer, standard_answer)
+                question_obj["explanation"] = explanation
+                
+            return is_correct, explanation
+        
         except ValueError:
-            # 如果无法简单比较，尝试正则表达式或其他模式匹配
-            # 这里使用简单的相等比较作为fallback
-            is_correct = user_answer.lower() == standard_answer.lower()
-            reward = MATH_REWARD_PER_QUESTION if is_correct else 0
+            # 数值比较失败，使用GPT检查
+            return await self._check_with_gpt(question_obj, user_answer)
+
+    async def _check_with_gpt(self, question_obj, user_answer):
+        """使用GPT检查答案 - 分离出的辅助方法"""
+        question = question_obj["question"]
+        standard_answer = question_obj["answer"]
+        difficulty = question_obj["difficulty"]
+        
+        prompt = f"""Please check if the following math answer is correct. Return the result in JSON format as follows:
+    {{
+        "is_correct": true/false,  // whether the answer is correct
+        "explanation": "detailed explanation",  // explain why it's correct or wrong
+        "standard_answer": "standard answer"  // the standard answer
+    }}
+
+    Question: {question}
+    Student's answer: {user_answer}
+    Standard answer: {standard_answer}
+
+    Please ensure the response is in valid JSON format."""
+
+        response = await asyncio.to_thread(
+            openai.chat.completions.create,
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": "You are a math teacher responsible for checking student answers. Please return results in JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=1.2
+        )
+        
+        try:
+            result = json.loads(response.choices[0].message.content)
+            is_correct = result.get("is_correct", False)
+            explanation = result.get("explanation", "")
             
-            # 记录到数据库
-            self.db.add_math_exercise(
-                question=question,
-                answer=user_answer,
-                is_correct=is_correct,
-                reward_minutes=reward,
-                is_gpt=0
-            )
+            # 根据难度确定奖励分钟数
+            reward = MATH_DIFFICULTY_REWARDS.get(difficulty, MATH_REWARD_PER_QUESTION) if is_correct else 0
             
-            return is_correct
-    
-    async def get_explanation_async(self, question, user_answer):
-        """异步获取错误答案的解释"""
+            # 更新当前问题对象
+            question_obj["is_correct"] = is_correct
+            
+            # 添加到数据库
+            await self._add_exercise_result(question, user_answer, is_correct, reward)
+            
+            # 如果答案错误，更新解释
+            if not is_correct:
+                question_obj["explanation"] = explanation
+                
+            return is_correct, explanation
+        except json.JSONDecodeError:
+            logger.error(f"GPT返回的不是有效的JSON格式: {response.choices[0].message.content}")
+            raise ValueError("无法解析GPT的响应")
+
+    async def _add_exercise_result(self, question, answer, is_correct, reward_minutes):
+        """添加练习结果到数据库 - 简化数据库操作，并同步奖励到本周extra_minutes"""
+        # 获取当前问题的难度和解释
+        difficulty = None
+        explanation = ""
+        for q in self.questions:
+            if q["question"] == question:
+                difficulty = q["difficulty"]
+                explanation = q.get("explanation", "")
+                logger.debug(f"提交答案记录，题目难度为 {difficulty}")
+                break
+        await asyncio.to_thread(
+            self.db.add_math_exercise,
+            question,
+            answer,
+            is_correct,
+            reward_minutes,
+            explanation,
+            1,  # is_gpt=1
+            difficulty
+        )
+        # 如果答对且有奖励，自动同步到本周extra_minutes
+        if is_correct and reward_minutes > 0:
+            today = datetime.date.today()
+            week_start = get_week_start(today).strftime("%Y-%m-%d")
+            # 获取当前extra_minutes
+            _, current_extra = await self.db.get_week_total(week_start)
+            new_extra = current_extra + reward_minutes
+            await self.db.add_weekly_extra_time(week_start, new_extra)
+        
+    # 兼容方法 - 调用异步版本
+    def check_answer(self, question_index, user_answer, callback=None):
+        if callback:
+            async def _run_and_callback():
+                try:
+                    is_correct, explanation = await self.check_answer_async(question_index, user_answer)
+                    callback(True, is_correct, explanation, None)
+                except Exception as e:
+                    callback(False, False, None, str(e))
+            return asyncio.create_task(_run_and_callback())
+
+    async def _get_explanation(self, question, user_answer, standard_answer):
+        """获取解释 - 简化版"""
         # 检查缓存
-        cached = self.db.get_cached_explanation(question, user_answer)
+        cached = await self.db.get_cached_explanation(question, user_answer)
         if cached:
             return cached
-            
         try:
-            if not openai.api_key:
-                raise ValueError("未设置OpenAI API密钥，请在.env文件中设置OPENAI_API_KEY")
-
             # 使用OpenAI API获取解释
             response = await asyncio.to_thread(
                 openai.chat.completions.create,
                 model="gpt-4.1-mini",
                 messages=[
                     {"role": "system", "content": "You are a math teacher. Please explain the student's answer and give a complete correct solution process. All in English."},
-                    {"role": "user", "content": f"Question: {question}\n\nStudent's answer: {user_answer}\n\nPlease explain the student's answer and give a complete correct solution process."}
+                    {"role": "user", "content": f"Question: {question}\n\nStudent's answer: {user_answer}\n\nCorrect answer: {standard_answer}\n\nPlease explain why the student's answer is wrong and provide a complete correct solution process."}
                 ],
-                temperature=0.5
+                temperature=1.2
             )
             
             explanation = response.choices[0].message.content
-            await asyncio.to_thread(self.db.cache_explanation, question, user_answer, explanation)
+            await self.db.cache_explanation(question, user_answer, explanation)
             return explanation
         except Exception as e:
-            error_msg = f"获取解释时出错: {str(e)}"
-            logger.error(error_msg)
-            raise
+            logger.error(f"获取解释时出错: {str(e)}")
+            return f"无法获取解释: {str(e)}"
     
+    # 兼容方法 - 获取错误答案的解释
     def get_explanation(self, question, user_answer, callback=None):
         """兼容性方法 - 获取错误答案的解释"""
         if callback:
             async def _run_and_callback():
                 try:
-                    explanation = await self.get_explanation_async(question, user_answer)
+                    explanation = await self._get_explanation(question, user_answer, "")
                     callback(True, explanation, None)
                 except Exception as e:
                     callback(False, None, str(e))
                     
             return asyncio.create_task(_run_and_callback())
     
-    def get_today_math_reward(self):
+    async def get_today_reward_minutes(self):
         """获取今天通过数学练习获得的奖励分钟数"""
-        return self.db.get_today_math_reward()
+        exercises = await self.db.get_today_math_exercises()
+        return sum(ex[5] or 0 for ex in exercises if ex[4] == 1)
     
-    def get_daily_questions(self):
-        """获取今日题目 (供UI调用)"""
+    async def get_daily_questions(self):
+        """获取今日题目 - 简化版"""
         # 检查是否已有缓存题目
-        if not self.current_questions:
-            # 尝试从数据库加载
-            self.load_cached_questions()
-            
-            # 如果仍然没有题目，生成新题目 (同步调用)
-            if not self.current_questions:
-                # 创建event loop确保可以调用异步函数
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    # 创建新的event loop
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                
-                # 同步等待异步函数完成
-                try:
-                    loop.run_until_complete(self._generate_questions_async(force_regenerate=False))
-                except Exception as e:
-                    logger.error(f"同步生成题目失败: {str(e)}")
+        if not self.questions:
+            # 如果没有题目，生成新题目
+            try:
+                logger.info("没有找到缓存题目，准备生成新题目")
+                await self._generate_questions_async(force_regenerate=False)
+            except Exception as e:
+                logger.error(f"异步生成题目失败: {str(e)}")
+                logger.exception("详细错误信息:")
+                return []
         
-        # 构造返回结果
+        # 确保题目数量正确
+        if len(self.questions) < 6:
+            logger.warning(f"题目数量不足，只有{len(self.questions)}道，尝试重新生成")
+            try:
+                # 尝试清空并重新生成
+                await self.clear_today_questions()
+                await self._generate_questions_async(force_regenerate=True)
+            except Exception as e:
+                logger.error(f"重新生成题目失败: {str(e)}")
+                logger.exception("详细错误信息:")
+                
+        # 记录题目难度，使用GPT返回的原始难度
+        if self.questions:
+            logger.info(f"GPT返回的题目难度: {[q.get('difficulty', '?') for q in self.questions]}")
+            
+            # 确保最后一题是难度4（竞赛级）
+            if len(self.questions) >= 6 and self.questions[5]['difficulty'] != 4:
+                logger.info(f"确保最后一题是竞赛级难度4")
+                self.questions[5]['difficulty'] = 4
+                
+                # 更新数据库中最后一题的难度
+                try:
+                    today = datetime.date.today().strftime("%Y-%m-%d")
+                    questions = await self.db.get_today_gpt_questions()
+                    
+                    if len(questions) >= 6:
+                        question_id = questions[5][0]  # 获取最后一题的ID
+                        logger.info(f"更新竞赛题ID {question_id} 的难度为4")
+                        self.db.conn.execute(
+                            "UPDATE math_exercises SET difficulty=? WHERE id=?",
+                            (4, question_id)
+                        )
+                        self.db.conn.commit()
+                except Exception as e:
+                    logger.error(f"更新竞赛题难度时出错: {e}")
+                    if hasattr(self.db, 'conn') and self.db.conn:
+                        self.db.conn.rollback()
+        
+        # 构造返回结果 (保持与原接口兼容)
         result = []
-        for i in range(len(self.current_questions)):
+        for q in self.questions:
             question_data = {
-                'question': self.current_questions[i],
-                'answer': self.current_answers[i] if i < len(self.current_answers) else "（无答案）",
-                'explanation': self.current_explanations[i] if i < len(self.current_explanations) else ""
+                'question': q['question'],
+                'answer': q['answer'],
+                'explanation': q.get('explanation', ''),
+                'difficulty': q.get('difficulty', 2)  # 默认难度2
             }
             result.append(question_data)
             
+        if not result:
+            logger.error("无法获取有效题目！")
+            
         return result
     
-    def clear_today_questions(self):
-        """清除今天的问题缓存"""
-        self.current_questions = []
-        self.current_answers = []
-        self.current_explanations = []
-        self.current_question_index = 0
-        self.db.clear_today_gpt_questions()
+    async def clear_today_questions(self):
+        """清除今天的问题缓存 - 简化版"""
+        self.questions = []
+        self.current_index = 0
+        await self.db.clear_today_gpt_questions()
         
     def close(self):
         """关闭数据库连接"""
         self.db.close()
 
     async def regenerate_daily_questions_async(self):
-        """异步重新生成今天的题目"""
+        """异步重新生成今天的题目 - 简化版"""
         # 清除今天的题目
-        await asyncio.to_thread(self.db.clear_today_gpt_questions)
-        self.current_questions = []
-        self.current_answers = []
-        self.current_explanations = []
-        self.current_question_index = 0
+        await self.clear_today_questions()
         
         # 重新生成题目，强制重新生成
         return await self._generate_questions_async(force_regenerate=True)
 
-    def regenerate_daily_questions(self):
-        """重新生成今天的题目 (同步版本保留兼容性)"""
-        # 清除今天的题目
-        self.db.clear_today_gpt_questions()
-        self.current_questions = []
-        self.current_answers = []
-        self.current_explanations = []
-        self.current_question_index = 0
-        
-        # 使用同步方式生成题目
-        self._generate_questions_thread(force_regenerate=True)
-        
-    def _generate_questions_thread(self, on_complete=None, force_regenerate=False):
-        """在后台线程中生成题目 (保留兼容性，不建议使用)"""
-        try:
-            # 检查是否已经有今天的题目，且不强制重新生成
-            if not force_regenerate:
-                today_questions = self.db.get_today_gpt_questions()
-                if today_questions:
-                    logger.info("今天已有题目，直接加载")
-                    self.current_questions = [q[2] for q in today_questions]  # question在索引2
-                    self.current_answers = [q[3] for q in today_questions]    # answer在索引3
-                    self.current_explanations = [q[6] for q in today_questions]  # explanation在索引6
-                    self.current_question_index = 0
-                    
-                    # 找到第一个未完成的题目
-                    for i, q in enumerate(today_questions):
-                        if q[4] is None:  # is_correct在索引4
-                            self.current_question_index = i
-                            break
-                    else:
-                        # 如果所有题目都已完成，跳转到最后一题
-                        self.current_question_index = len(today_questions) - 1
-                    
-                    if on_complete:
-                        on_complete(True, None)
-                    return True
-                
-            # 启动异步任务
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                # 如果没有事件循环，创建一个
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-            # 创建异步任务
-            task = loop.create_task(self._generate_questions_async(force_regenerate))
-            
-            # 设置回调
-            if on_complete:
-                def done_callback(task):
-                    try:
-                        result = task.result()
-                        on_complete(True, None)
-                    except Exception as e:
-                        on_complete(False, str(e))
-                        
-                task.add_done_callback(done_callback)
-                
-            return task
-            
-        except Exception as e:
-            logger.error(f"生成题目错误: {e}")
-            if on_complete:
-                on_complete(False, str(e))
-            return False 
+    async def regenerate_daily_questions(self):
+        """重新生成今天的题目 (兼容版本)"""
+        return await self.regenerate_daily_questions_async() 
