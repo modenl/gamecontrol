@@ -482,19 +482,33 @@ class AdminPanel(QDialog):
             sessions = await self.game_limiter.get_sessions()
             # 添加到树
             for session in sessions:
-                # 使用索引访问而不是直接解包
-                sid = session[0]
-                start_time = session[1]
-                end_time = session[2]
-                duration = session[3]
-                game = session[4]
-                note = session[5]
+                # 处理不同的表结构版本
+                if len(session) == 7:  # 新版本：id, start_time, end_time, duration, game, note, game_name
+                    sid, start_time, end_time, duration, game, note, game_name = session
+                    # 使用game_name字段，如果为空则使用game字段
+                    display_game = game_name or game or "Unknown"
+                elif len(session) == 6:  # 旧版本：id, start_time, end_time, duration, game, note
+                    sid, start_time, end_time, duration, game, note = session
+                    display_game = game or "Unknown"
+                elif len(session) == 5:  # 更旧版本：id, start_time, end_time, duration, game
+                    sid, start_time, end_time, duration, game = session
+                    note = ""
+                    display_game = game or "Unknown"
+                else:
+                    # 如果结构不匹配，使用索引访问而不是直接解包
+                    sid = session[0]
+                    start_time = session[1]
+                    end_time = session[2] if len(session) > 2 else None
+                    duration = session[3] if len(session) > 3 else 0
+                    display_game = session[4] if len(session) > 4 else "Unknown"
+                    note = session[5] if len(session) > 5 else ""
+                    
                 item = QTreeWidgetItem([
                     str(sid),
                     start_time,
                     end_time or "In Progress",
                     str(duration or 0),
-                    game or "Unknown",
+                    display_game,
                     note or "",
                 ])
                 self.history_tree.addTopLevelItem(item)

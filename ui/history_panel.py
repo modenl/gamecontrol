@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
+from qasync import asyncSlot
 
 from logic.constants import (
     PADDING_MEDIUM,
@@ -59,12 +60,10 @@ class HistoryPanel(QDialog):
         week_layout = QHBoxLayout()
         week_layout.addWidget(QLabel("Select Week:"))
         
-        # 获取可选的周
-        self.weeks = asyncio.create_task(self.get_available_weeks())
+        # 初始化空的周下拉列表，稍后在async_load_data中填充
         self.week_combo = QComboBox()
-        self.week_combo.addItems(self.weeks)
-        self.week_combo.setCurrentIndex(0)
-        self.week_combo.currentIndexChanged.connect(self.load_history)
+        self.week_combo.addItem("Loading...")  # 临时占位项
+        self.week_combo.currentIndexChanged.connect(lambda: asyncio.create_task(self.on_week_changed()))
         week_layout.addWidget(self.week_combo)
         
         control_layout.addLayout(week_layout)
@@ -114,7 +113,7 @@ class HistoryPanel(QDialog):
         button_layout = QHBoxLayout()
         
         self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.clicked.connect(self.load_history)
+        self.refresh_button.clicked.connect(lambda: asyncio.create_task(self._load_history_async()))
         button_layout.addWidget(self.refresh_button)
         
         # 弹性空间
@@ -168,6 +167,14 @@ class HistoryPanel(QDialog):
     async def async_load_data(self):
         """加载历史数据"""
         try:
+            # 获取可用的周列表
+            self.weeks = await self.get_available_weeks()
+            
+            # 清空并填充周下拉列表
+            self.week_combo.clear()
+            self.week_combo.addItems(self.weeks)
+            self.week_combo.setCurrentIndex(0)
+            
             # 获取会话记录
             self.all_sessions = await self.game_limiter.get_sessions()
             
@@ -189,33 +196,54 @@ class HistoryPanel(QDialog):
         # 准备要显示的会话
         filtered_sessions = []
         
-        if filter_option == "All Records":
-            filtered_sessions = self.all_sessions
-        elif filter_option == "This Week Records":
-            today = datetime.date.today()
-            week_start = today - datetime.timedelta(days=today.weekday())
+        # 检查是否为日期格式的周开始日期
+        try:
+            # 尝试解析为日期格式 (YYYY-MM-DD)
+            selected_week_start = datetime.datetime.strptime(filter_option, "%Y-%m-%d").date()
+            selected_week_end = selected_week_start + datetime.timedelta(days=7)
             
-            used, extra = await self.game_limiter.db.get_week_total(week_start.strftime("%Y-%m-%d"))
-            
-            # 记录周总计
-            self.add_summary_item(week_start.strftime("%Y-%m-%d"), used, extra)
-            
-            # 筛选本周会话
+            # 筛选指定周的会话
             for session in self.all_sessions:
-                session_date = session[1].split(" ")[0]  # 取start_time的日期部分
-                if session_date >= week_start.strftime("%Y-%m-%d"):
+                session_date_str = session[1].split(" ")[0]  # 取start_time的日期部分
+                session_date = datetime.datetime.strptime(session_date_str, "%Y-%m-%d").date()
+                if selected_week_start <= session_date < selected_week_end:
                     filtered_sessions.append(session)
-        elif filter_option == "Last Week Records":
-            today = datetime.date.today()
-            this_week_start = today - datetime.timedelta(days=today.weekday())
-            last_week_start = (this_week_start - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-            this_week_start_str = this_week_start.strftime("%Y-%m-%d")
+                    
+            # 获取该周的统计信息
+            used, extra = await self.game_limiter.db.get_week_total(filter_option)
             
-            # 筛选上周会话
-            for session in self.all_sessions:
-                session_date = session[1].split(" ")[0]  # 取start_time的日期部分
-                if session_date >= last_week_start and session_date < this_week_start_str:
-                    filtered_sessions.append(session)
+            # 添加周总计
+            self.add_summary_item(filter_option, used, extra)
+            
+        except ValueError:
+            # 如果不是日期格式，使用旧的逻辑
+            if filter_option == "All Records":
+                filtered_sessions = self.all_sessions
+            elif filter_option == "This Week Records":
+                today = datetime.date.today()
+                week_start = today - datetime.timedelta(days=today.weekday())
+                
+                used, extra = await self.game_limiter.db.get_week_total(week_start.strftime("%Y-%m-%d"))
+                
+                # 记录周总计
+                self.add_summary_item(week_start.strftime("%Y-%m-%d"), used, extra)
+                
+                # 筛选本周会话
+                for session in self.all_sessions:
+                    session_date = session[1].split(" ")[0]  # 取start_time的日期部分
+                    if session_date >= week_start.strftime("%Y-%m-%d"):
+                        filtered_sessions.append(session)
+            elif filter_option == "Last Week Records":
+                today = datetime.date.today()
+                this_week_start = today - datetime.timedelta(days=today.weekday())
+                last_week_start = (this_week_start - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+                this_week_start_str = this_week_start.strftime("%Y-%m-%d")
+                
+                # 筛选上周会话
+                for session in self.all_sessions:
+                    session_date = session[1].split(" ")[0]  # 取start_time的日期部分
+                    if session_date >= last_week_start and session_date < this_week_start_str:
+                        filtered_sessions.append(session)
         
         # 添加会话到树视图
         for session in filtered_sessions:
@@ -234,29 +262,77 @@ class HistoryPanel(QDialog):
         self.history_tree.addTopLevelItem(item)
     
     def add_session_item(self, session):
-        """添加会话项"""
-        sid, start_time, end_time, duration, game, note = session
+        """添加会话项 - 修复以支持7列数据库结构"""
+        # 处理不同的表结构版本
+        if len(session) == 7:  # 新版本：id, start_time, end_time, duration, game, note, game_name
+            sid, start_time, end_time, duration, game, note, game_name = session
+            # 使用game_name字段，如果为空则使用game字段
+            display_game = game_name or game or "Unknown"
+        elif len(session) == 6:  # 旧版本：id, start_time, end_time, duration, game, note
+            sid, start_time, end_time, duration, game, note = session
+            display_game = game or "Unknown"
+        elif len(session) == 5:  # 更旧版本：id, start_time, end_time, duration, game
+            sid, start_time, end_time, duration, game = session
+            note = ""
+            display_game = game or "Unknown"
+        else:
+            # 如果结构不匹配，记录错误并使用安全的默认值
+            print(f"Warning: Unexpected session structure with {len(session)} columns: {session}")
+            sid = session[0] if len(session) > 0 else "?"
+            start_time = session[1] if len(session) > 1 else "Unknown"
+            end_time = session[2] if len(session) > 2 else None
+            duration = session[3] if len(session) > 3 else 0
+            display_game = "Unknown"
+            note = ""
+        
         item = QTreeWidgetItem([
             str(sid),
             start_time,
             end_time or "In Progress",
             str(duration or 0),
-            game or "Unknown",
+            display_game,
             note or ""
         ])
         self.history_tree.addTopLevelItem(item)
     
     def load_history(self):
-        """加载历史记录"""
-        asyncio.create_task(self.async_load_data())
-    
-    def update_statistics(self, week_start):
-        """更新统计信息"""
+        """加载历史记录 - 避免UI冻结"""
+        # 避免重复加载
+        if hasattr(self, '_loading_history') and self._loading_history:
+            return
+            
+        # 创建异步任务来加载数据
         try:
-            # 获取该周的总时长和额外时间
-            used, extra = self.game_limiter.db.get_week_total(week_start)
+            asyncio.create_task(self._load_history_async())
+        except RuntimeError:
+            # 如果事件循环没有运行，创建新的事件循环
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._load_history_async())
+            loop.close()
+    
+    async def _load_history_async(self):
+        """异步加载历史记录"""
+        if hasattr(self, '_loading_history') and self._loading_history:
+            return
+            
+        self._loading_history = True
+        try:
+            await self.async_load_data()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load history: {str(e)}")
+        finally:
+            self._loading_history = False
+    
+    async def update_statistics(self, week_start):
+        """更新统计信息 - 修复为异步调用"""
+        try:
+            # 使用异步方法获取该周的总时长和额外时间
+            used, extra = await self.game_limiter.db.get_week_total(week_start)
             
             # 计算剩余时间
+            from logic.constants import MAX_WEEKLY_LIMIT
             weekly_limit = min(DEFAULT_WEEKLY_LIMIT + extra, MAX_WEEKLY_LIMIT)
             remaining = max(0, weekly_limit - used)
             
@@ -304,4 +380,9 @@ class HistoryPanel(QDialog):
     
     def closeEvent(self, event):
         """窗口关闭事件"""
-        event.accept() 
+        event.accept()
+    
+    async def on_week_changed(self):
+        """周选择改变时的异步处理"""
+        if hasattr(self, 'all_sessions'):
+            await self.filter_and_display_sessions() 
