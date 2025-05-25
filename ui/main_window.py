@@ -35,6 +35,7 @@ from ui.base import StatusBar, SessionTimer, OverlayWindow, ShakeEffect
 from ui.math_panel_simple import SimpleMathPanel
 from ui.admin_panel import AdminPanel
 from ui.history_panel import HistoryPanel
+from logic.auto_updater import get_updater
 
 # 配置日志
 logger = logging.getLogger("main_window")
@@ -49,10 +50,19 @@ class MainWindow(QMainWindow):
         self.session_active = False
         self.countdown_window = None
         self.window_monitor = WindowMonitor(self.game_limiter, check_interval=15)
+        
+        # 初始化自动更新器
+        self.auto_updater = get_updater(self)
+        self.auto_updater.update_available.connect(self.on_update_available)
+        self.auto_updater.update_check_failed.connect(self.on_update_check_failed)
+        
         self.setup_window()
         self.setup_ui()
         self.refresh_weekly_status_async()
         QTimer.singleShot(1000, self.delayed_start_monitoring)
+        
+        # 启动时检查更新（延迟5秒，让程序完全启动）
+        QTimer.singleShot(5000, lambda: self.auto_updater.check_for_updates())
 
     # --- 工具方法 ---
     def make_label(self, text: str, bold: bool = False, align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignCenter) -> QLabel:
@@ -208,8 +218,10 @@ class MainWindow(QMainWindow):
         second_row = QHBoxLayout()
         self.history_button = self.create_button("History", self.show_history)
         self.admin_button = self.create_button("Admin", self.admin_login)
+        self.update_button = self.create_button("Check Updates", self.check_for_updates_manual)
         second_row.addWidget(self.history_button)
         second_row.addWidget(self.admin_button)
+        second_row.addWidget(self.update_button)
         second_row.addStretch()
         control_layout.addLayout(first_row)
         control_layout.addLayout(second_row)
@@ -281,6 +293,51 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'window_monitor') and not self.window_monitor.is_running:
             logger.info("恢复窗口监控")
             asyncio.create_task(self.window_monitor.start_monitoring())
+    
+    # --- 自动更新相关方法 ---
+    def check_for_updates_manual(self):
+        """手动检查更新"""
+        logger.info("用户手动检查更新")
+        
+        # 检查是否可以更新
+        can_update, reason = self.auto_updater.can_update_now()
+        if not can_update:
+            self.show_warning(f"当前无法检查更新：{reason}\n\n请在游戏会话结束且没有数学练习进行时再试。")
+            return
+        
+        # 显示检查中的状态
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Checking...")
+        
+        # 开始检查
+        self.auto_updater.check_for_updates(manual=True)
+        
+        # 5秒后恢复按钮状态（无论是否找到更新）
+        QTimer.singleShot(5000, self.restore_update_button)
+    
+    def restore_update_button(self):
+        """恢复更新按钮状态"""
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Check Updates")
+    
+    def on_update_available(self, update_info):
+        """处理发现更新的信号"""
+        logger.info(f"主窗口收到更新可用信号: {update_info.version}")
+        # 更新器会自动显示对话框，这里只需要恢复按钮状态
+        self.restore_update_button()
+    
+    def on_update_check_failed(self, error_msg):
+        """处理更新检查失败的信号"""
+        logger.error(f"更新检查失败: {error_msg}")
+        self.restore_update_button()
+        
+        # 如果是手动检查，显示错误信息
+        if not self.update_button.isEnabled():
+            QMessageBox.information(
+                self,
+                "检查更新",
+                f"检查更新失败：{error_msg}\n\n请检查网络连接后重试。"
+            )
 
     def end_session_early(self) -> None:
         """提前结束会话"""
@@ -527,6 +584,14 @@ class MainWindow(QMainWindow):
                             panel.close()
                         except:
                             pass
+            
+            # 清理自动更新器
+            if hasattr(self, 'auto_updater') and self.auto_updater:
+                try:
+                    logger.info("清理自动更新器...")
+                    asyncio.create_task(self.auto_updater.close())
+                except Exception as e:
+                    logger.error(f"清理自动更新器时出错: {e}")
             
             # 清理应用程序资源
             try:

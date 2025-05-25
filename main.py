@@ -10,6 +10,13 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, QTimer
 
 # 应用程序属性设置
+try:
+    from version import __version__, APP_DISPLAY_NAME
+    print(f"Starting {APP_DISPLAY_NAME} v{__version__}")
+except ImportError:
+    __version__ = "1.0.0"
+    APP_DISPLAY_NAME = "Game Time Limiter"
+    print(f"Starting {APP_DISPLAY_NAME} v{__version__}")
 
 # 设置基本日志记录器，其他模块的导入放到后面延迟加载
 logging.basicConfig(

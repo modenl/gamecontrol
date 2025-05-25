@@ -1,0 +1,216 @@
+name: Build and Release GameTimeLimiter
+
+on:
+  push:
+    tags:
+      - 'v*'  # 当推送版本标签时触发，如 v1.0.0
+  workflow_dispatch:  # 允许手动触发
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~\AppData\Local\pip\Cache
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Install UPX (for compression)
+      run: |
+        # Download and install UPX for better compression
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-win64.zip" -OutFile "upx.zip"
+        Expand-Archive -Path "upx.zip" -DestinationPath "."
+        $env:PATH += ";$PWD\upx-4.2.1-win64"
+        echo "$PWD\upx-4.2.1-win64" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        
+    - name: Get version from tag or input
+      id: get_version
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $version = "${{ github.event.inputs.version }}"
+        } else {
+          $version = "${{ github.ref_name }}".TrimStart("v")
+        }
+        echo "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        echo "Version: $version"
+        
+    - name: Update version in code
+      run: |
+        $version = "${{ steps.get_version.outputs.version }}"
+        $versionParts = $version.Split('.')
+        $major = $versionParts[0]
+        $minor = $versionParts[1]
+        $patch = $versionParts[2]
+        
+        # Update version.py
+        $content = Get-Content "version.py" -Raw
+        $content = $content -replace '__version__ = ".*"', "__version__ = `"$version`""
+        $content = $content -replace '"major": \d+', "`"major`": $major"
+        $content = $content -replace '"minor": \d+', "`"minor`": $minor"
+        $content = $content -replace '"patch": \d+', "`"patch`": $patch"
+        Set-Content "version.py" -Value $content
+        
+        echo "Updated version to $version"
+        
+    - name: Create .env.example
+      run: |
+        echo "# OpenAI API Configuration" > .env.example
+        echo "OPENAI_API_KEY=your_api_key_here" >> .env.example
+        
+    - name: Build application (Standard)
+      run: |
+        python build.py --optimize 1
+        
+    - name: Build application (Portable)
+      run: |
+        # Clean previous build
+        if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+        if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+        
+        # Build portable version (directory structure)
+        python build.py --optimize 2
+        
+        # Create portable package
+        if (Test-Path "dist/GameTimeLimiter") {
+          Compress-Archive -Path "dist/GameTimeLimiter/*" -DestinationPath "dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip"
+        }
+        
+    - name: Verify builds
+      run: |
+        echo "=== Build Results ==="
+        Get-ChildItem -Path "dist" -Recurse | Format-Table Name, Length, LastWriteTime
+        
+        # Test executable
+        if (Test-Path "dist/GameTimeLimiter.exe") {
+          echo "Standard build: OK"
+          $size = (Get-Item "dist/GameTimeLimiter.exe").Length / 1MB
+          echo "Size: $([math]::Round($size, 2)) MB"
+        } else {
+          echo "Standard build: FAILED"
+          exit 1
+        }
+        
+        if (Test-Path "dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip") {
+          echo "Portable build: OK"
+          $size = (Get-Item "dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip").Length / 1MB
+          echo "Size: $([math]::Round($size, 2)) MB"
+        } else {
+          echo "Portable build: FAILED"
+          exit 1
+        }
+        
+    - name: Create release notes
+      id: release_notes
+      run: |
+        $version = "${{ steps.get_version.outputs.version }}"
+        $notes = @"
+        # GameTimeLimiter v$version
+        
+        ## 📦 下载说明
+        
+        - **GameTimeLimiter.exe**: 标准版本，单文件可执行程序
+        - **GameTimeLimiter-Portable-v$version.zip**: 便携版本，解压即用，启动更快
+        
+        ## ✨ 主要功能
+        
+        - 🎮 游戏时间管理和限制
+        - 📚 数学练习奖励系统
+        - 🔒 防作弊机制
+        - 📊 详细的使用统计
+        - 🔄 自动更新功能
+        
+        ## 🚀 使用方法
+        
+        1. 下载对应版本的文件
+        2. 创建 `.env` 文件并配置 OpenAI API 密钥（用于数学练习）
+        3. 运行程序开始使用
+        
+        ## 📋 系统要求
+        
+        - Windows 10/11 (64位)
+        - .NET Framework 4.7.2 或更高版本
+        - 网络连接（用于更新检查和数学练习）
+        
+        ## 🔧 配置说明
+        
+        首次运行需要配置 OpenAI API 密钥：
+        ```
+        OPENAI_API_KEY=your_api_key_here
+        ```
+        
+        ---
+        
+        如有问题请提交 Issue 或查看项目文档。
+        "@
+        
+        # Save to file for upload
+        Set-Content "release_notes.md" -Value $notes
+        
+        # Also output for GitHub
+        $notes | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: GameTimeLimiter-Windows-v${{ steps.get_version.outputs.version }}
+        path: |
+          dist/GameTimeLimiter.exe
+          dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip
+          .env.example
+          README.md
+          LICENSE
+          
+    - name: Create Release
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: GameTimeLimiter ${{ steps.get_version.outputs.version }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: false
+        files: |
+          dist/GameTimeLimiter.exe
+          dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip
+          .env.example
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Create Manual Release
+      if: github.event_name == 'workflow_dispatch'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.get_version.outputs.version }}
+        name: GameTimeLimiter ${{ steps.get_version.outputs.version }}
+        body_path: release_notes.md
+        draft: true  # Manual releases start as draft
+        prerelease: false
+        files: |
+          dist/GameTimeLimiter.exe
+          dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip
+          .env.example
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 

@@ -468,87 +468,52 @@ class SimpleMathPanel(QDialog):
         self.submit_button.setEnabled(False)
         self.next_button.setEnabled(False)
 
-    def prepare_math_text(self, text):
-        """准备数学文本，使用混合模式：HTML+纯文本"""
+    def prepare_text_for_display(self, text):
+        """统一的文本处理方法 - 修复ASCII art显示"""
         if not text:
             return ""
         
-        # 注意：这里不需要JSON转义处理，因为数据已经是Python字符串对象
-        # 之前的JSON转义处理是不必要的，还会破坏LaTeX命令
-        
-        # 检查是否包含ASCII art（代码块）
-        import re
-        has_ascii_art = bool(re.search(r'```.*?```', text, re.DOTALL))
-        
-        if has_ascii_art:
-            # 如果包含ASCII art，使用纯文本模式
-            return self.prepare_plain_text(text)
-        else:
-            # 如果没有ASCII art，使用HTML模式
-            return self.prepare_html_text(text)
-    
-    def prepare_plain_text(self, text):
-        """准备纯文本格式，保持ASCII art的原始格式"""
         import re
         
-        # 移除代码块标记，但保留内容
-        text = re.sub(r'```\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
+        # 0. 首先处理转义的换行符（从数据库读取的数据可能包含\\n）
+        text = text.replace('\\n', '\n').replace('\\t', '\t')
         
-        # 简单的数学符号替换
-        text = text.replace('\\pi', 'π')
-        text = text.replace('\\theta', 'θ')
-        text = text.replace('\\alpha', 'α')
-        text = text.replace('\\beta', 'β')
-        text = text.replace('\\gamma', 'γ')
-        text = text.replace('\\cdot', '·')
-        text = text.replace('\\times', '×')
-        text = text.replace('\\div', '÷')
-        text = text.replace('\\leq', '≤')
-        text = text.replace('\\geq', '≥')
-        text = text.replace('\\neq', '≠')
-        text = text.replace('\\approx', '≈')
-        text = text.replace('\\infty', '∞')
+        # 1. 先保护ASCII art代码块，避免被后续处理破坏
+        code_blocks = []
+        def protect_code_block(match):
+            code_content = match.group(1)
+            # 使用严格的等宽字体设置，确保字符对齐
+            formatted_code = f'<pre style="font-family: \'Consolas\', \'Courier New\', \'Liberation Mono\', \'Menlo\', monospace; font-size: 13px; background-color: #2a2a2a; color: #d0d0d0; padding: 15px; border-radius: 6px; border: 1px solid #4a4a4a; white-space: pre; overflow-x: auto; margin: 15px 0; line-height: 1.0; letter-spacing: 0; font-weight: normal; font-variant: normal; text-rendering: optimizeSpeed;">{code_content}</pre>'
+            code_blocks.append(formatted_code)
+            return f"__CODE_BLOCK_{len(code_blocks)-1}__"
         
-        # 移除$$标记
-        text = re.sub(r'\$\$(.*?)\$\$', r'\1', text, flags=re.DOTALL)
-        text = re.sub(r'\$([^$]+)\$', r'\1', text)
+        # 保护代码块
+        text = re.sub(r'```(.*?)```', protect_code_block, text, flags=re.DOTALL)
         
-        return text.strip()
-    
-    def prepare_html_text(self, text):
-        """准备HTML格式文本"""
-        import re
-        
-        # 简化数学公式处理
+        # 2. 处理数学公式 - 简单的符号替换
         def replace_math(match):
             math_content = match.group(1).strip()
-            # 简单的数学符号替换
-            math_content = math_content.replace('\\frac', 'fraction')
-            math_content = math_content.replace('\\sqrt', 'sqrt')
-            math_content = math_content.replace('\\pi', 'π')
-            math_content = math_content.replace('\\theta', 'θ')
-            math_content = math_content.replace('\\alpha', 'α')
-            math_content = math_content.replace('\\beta', 'β')
-            math_content = math_content.replace('\\gamma', 'γ')
-            math_content = math_content.replace('\\cdot', '·')
-            math_content = math_content.replace('\\times', '×')
-            math_content = math_content.replace('\\div', '÷')
-            math_content = math_content.replace('\\leq', '≤')
-            math_content = math_content.replace('\\geq', '≥')
-            math_content = math_content.replace('\\neq', '≠')
-            math_content = math_content.replace('\\approx', '≈')
-            math_content = math_content.replace('\\infty', '∞')
-            return f'<b style="color: #4fc3f7;">{math_content}</b>'
+            # 基本的LaTeX符号替换
+            replacements = {
+                '\\pi': 'π', '\\theta': 'θ', '\\alpha': 'α', '\\beta': 'β', '\\gamma': 'γ',
+                '\\cdot': '·', '\\times': '×', '\\div': '÷', '\\leq': '≤', '\\geq': '≥',
+                '\\neq': '≠', '\\approx': '≈', '\\infty': '∞', '\\frac': 'fraction', '\\sqrt': 'sqrt'
+            }
+            for latex, symbol in replacements.items():
+                math_content = math_content.replace(latex, symbol)
+            return f'<b style="color: #87ceeb;">{math_content}</b>'
         
-        # 替换$$...$$数学公式
+        # 处理 $$...$$和$...$
         text = re.sub(r'\$\$(.*?)\$\$', replace_math, text, flags=re.DOTALL)
-        
-        # 替换$...$数学公式
         text = re.sub(r'\$([^$]+)\$', replace_math, text)
         
-        # 处理换行符
-        text = re.sub(r'\n\n+', '<br><br>', text)
-        text = re.sub(r'(?<!\>)\n(?!\<)', ' ', text)
+        # 3. 处理普通文本的换行符（代码块已被保护）
+        text = text.replace('\n\n', '<br><br>')  # 段落分隔
+        text = text.replace('\n', '<br>')  # 单个换行变成<br>
+        
+        # 4. 恢复代码块
+        for i, code_block in enumerate(code_blocks):
+            text = text.replace(f"__CODE_BLOCK_{i}__", code_block)
         
         return text
 
@@ -583,33 +548,28 @@ class SimpleMathPanel(QDialog):
             reward_display = f"{reward_mins:.1f}"
         self.meta_info.setText(f"Difficulty: {difficulty_name} | Reward: {reward_display} minutes")
 
-        # 显示题目内容
-        formatted_question = self.prepare_math_text(self.current_question)
+        # 显示题目内容 - 使用简化的统一处理方法
+        formatted_question = self.prepare_text_for_display(self.current_question)
+        self.question_content.setHtml(formatted_question)
         
-        # 检查是否包含ASCII art来决定显示方式
-        import re
-        has_ascii_art = bool(re.search(r'```.*?```', self.current_question, re.DOTALL))
-        
-        if has_ascii_art:
-            # 对于ASCII art，使用纯文本模式并设置等宽字体
-            self.question_content.setPlainText(formatted_question)
-            # 设置等宽字体
-            mono_font = QFont("Courier New", 12)
-            mono_font.setStyleHint(QFont.StyleHint.Monospace)
-            self.question_content.setFont(mono_font)
-        else:
-            # 对于普通文本，使用HTML模式
-            self.question_content.setHtml(formatted_question)
-            # 恢复普通字体
-            content_font = QFont()
-            content_font.setPointSize(14)
-            self.question_content.setFont(content_font)
+        # 设置字体
+        content_font = QFont()
+        content_font.setPointSize(14)
+        self.question_content.setFont(content_font)
 
         # 隐藏结果区域
         self.result_frame.hide()
 
-        # 检查这题是否已经回答过
-        if self.current_index in self.submitted_answers:
+        # 检查是否所有题目都已完成
+        if self.done_count >= len(self.questions):
+            # 所有题目已完成，禁用所有输入
+            self.answer_entry.setEnabled(False)
+            self.answer_entry.setPlaceholderText("All questions completed!")
+            self.submit_button.setEnabled(False)
+            self.submit_button.setText("All Done!")
+            self.next_button.setText("All Done!")
+            self.next_button.setEnabled(False)
+        elif self.current_index in self.submitted_answers:
             # 已经回答过，禁用提交按钮，启用下一题按钮
             self.submit_button.setEnabled(False)
             self.submit_button.setText("Already Answered")
@@ -621,6 +581,7 @@ class SimpleMathPanel(QDialog):
                 self.next_button.setEnabled(False)
         else:
             # 未回答过，启用提交按钮
+            self.answer_entry.setEnabled(True)  # 确保输入框启用
             self.submit_button.setEnabled(True)
             self.submit_button.setText("Submit Answer")
             # 禁用下一题按钮，直到回答后再启用
@@ -634,6 +595,11 @@ class SimpleMathPanel(QDialog):
 
     async def submit_answer(self):
         """提交答案"""
+        # 检查是否所有题目都已完成
+        if self.done_count >= len(self.questions):
+            logger.warning("所有题目已完成，忽略重复提交")
+            return
+            
         # 防止重复检查同一题目
         if self.answer_checked or self.current_index in self.submitted_answers:
             logger.warning(f"题目 {self.current_index} 答案已检查过，忽略重复提交")
@@ -700,6 +666,12 @@ class SimpleMathPanel(QDialog):
                 # 最后一题，显示完成信息
                 self.next_button.setText("All Done!")
                 self.next_button.setEnabled(False)
+                
+                # 禁用答案输入框和提交按钮，防止重复提交
+                self.answer_entry.setEnabled(False)
+                self.answer_entry.setPlaceholderText("All questions completed!")
+                self.submit_button.setEnabled(False)
+                self.submit_button.setText("All Done!")
 
         except Exception as e:
             logger.error(f"检查答案时出错: {e}")
@@ -748,29 +720,13 @@ class SimpleMathPanel(QDialog):
             
             # 显示正确答案
             if self.current_answer:
-                # 检查是否包含ASCII art来决定显示方式
-                import re
-                has_ascii_art = bool(re.search(r'```.*?```', self.current_answer, re.DOTALL))
-                
-                if has_ascii_art:
-                    formatted_answer = self.prepare_plain_text(self.current_answer)
-                    result_text += f"<p><b>Correct Answer:</b></p><pre style='font-family: monospace; background-color: #f0f0f0; padding: 10px; border-radius: 4px; color: #333;'>{formatted_answer}</pre>"
-                else:
-                    formatted_answer = self.prepare_html_text(self.current_answer)
-                    result_text += f"<p><b>Correct Answer:</b> {formatted_answer}</p>"
+                formatted_answer = self.prepare_text_for_display(self.current_answer)
+                result_text += f"<p><b>Correct Answer:</b> {formatted_answer}</p>"
             
             # 显示解释
             if explanation:
-                # 检查解释是否包含ASCII art
-                import re
-                has_ascii_art = bool(re.search(r'```.*?```', explanation, re.DOTALL))
-                
-                if has_ascii_art:
-                    formatted_explanation = self.prepare_plain_text(explanation)
-                    result_text += f"<p><b>Explanation:</b></p><pre style='font-family: monospace; background-color: #f0f0f0; padding: 10px; border-radius: 4px; color: #333; white-space: pre-wrap;'>{formatted_explanation}</pre>"
-                else:
-                    formatted_explanation = self.prepare_html_text(explanation)
-                    result_text += f"<p><b>Explanation:</b><br>{formatted_explanation}</p>"
+                formatted_explanation = self.prepare_text_for_display(explanation)
+                result_text += f"<p><b>Explanation:</b><br>{formatted_explanation}</p>"
         
         self.result_display.setStyleSheet(result_style)
         self.result_display.setHtml(result_text)
@@ -802,6 +758,13 @@ class SimpleMathPanel(QDialog):
                 logger.info("已经是最后一题")
                 self.next_button.setText("All Done!")
                 self.next_button.setEnabled(False)
+                
+                # 如果所有题目都已完成，禁用输入
+                if self.done_count >= len(self.questions):
+                    self.answer_entry.setEnabled(False)
+                    self.answer_entry.setPlaceholderText("All questions completed!")
+                    self.submit_button.setEnabled(False)
+                    self.submit_button.setText("All Done!")
                 
                 # 发送完成信号
                 total_reward = 0
@@ -840,7 +803,7 @@ class SimpleMathPanel(QDialog):
         QMessageBox.information(self, "Reward Information", info_text)
 
     def show_today_questions(self):
-        """显示今日题目列表"""
+        """显示今日题目列表 - 使用HTML展示"""
         if not self.questions:
             QMessageBox.information(self, "No Questions", "No questions available for today.")
             return
@@ -848,62 +811,209 @@ class SimpleMathPanel(QDialog):
         # 创建题目列表对话框
         dialog = QDialog(self)
         dialog.setWindowTitle("Today's Math Questions")
-        dialog.resize(800, 600)
+        dialog.resize(1200, 800)  # 增大窗口尺寸
+        dialog.setMinimumSize(1000, 600)  # 设置最小尺寸
         
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
         
-        # 创建表格
-        table = QTableWidget()
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(["#", "Difficulty", "Reward", "Status", "Question Preview"])
-        table.setRowCount(len(self.questions))
+        # 创建HTML显示区域
+        html_display = QTextEdit()
+        html_display.setReadOnly(True)
+        # 设置深色主题样式
+        html_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #2b2b2b;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+            }
+        """)
         
+        # 构建HTML内容 - 简洁清晰的深色主题
+        html_content = """
+        <html>
+        <head>
+            <style>
+                body {{ 
+                    font-family: 'Segoe UI', Arial, sans-serif; 
+                    margin: 20px; 
+                    background-color: #2b2b2b;
+                    color: #e0e0e0;
+                    line-height: 1.6;
+                }}
+                .header {{ 
+                    text-align: center; 
+                    margin-bottom: 30px; 
+                    padding: 20px;
+                    background-color: #3a3a3a;
+                    border-radius: 10px;
+                    border: 1px solid #4a4a4a;
+                }}
+                .header h2 {{ 
+                    margin: 0 0 10px 0; 
+                    color: #ffffff;
+                    font-size: 26px;
+                    font-weight: 600;
+                }}
+                .header p {{ 
+                    margin: 0; 
+                    color: #b8b8b8;
+                    font-size: 16px;
+                }}
+                .question-card {{ 
+                    border: 1px solid #4a4a4a; 
+                    border-radius: 8px; 
+                    margin: 20px 0; 
+                    padding: 20px; 
+                    background-color: #353535;
+                }}
+                .question-header {{ 
+                    margin-bottom: 15px;
+                    padding-bottom: 12px;
+                    border-bottom: 1px solid #4a4a4a;
+                }}
+                .question-number {{ 
+                    font-weight: 600; 
+                    font-size: 20px; 
+                    color: #87ceeb; 
+                    margin-bottom: 8px;
+                }}
+                .question-meta {{ 
+                    font-size: 14px; 
+                    color: #a8a8a8; 
+                    margin-bottom: 5px;
+                }}
+                .question-content {{ 
+                    margin-top: 15px; 
+                    padding: 18px;
+                    background-color: #404040;
+                    border-radius: 6px;
+                    border-left: 4px solid #87ceeb;
+                    color: #e8e8e8;
+                    font-size: 15px;
+                    line-height: 1.7;
+                }}
+                .question-content pre {{
+                    background-color: #2a2a2a;
+                    border: 1px solid #4a4a4a;
+                    border-radius: 6px;
+                    padding: 15px;
+                    margin: 12px 0;
+                    font-family: 'Consolas', 'Courier New', 'Liberation Mono', 'Menlo', monospace;
+                    font-size: 13px;
+                    color: #d0d0d0;
+                    overflow-x: auto;
+                    white-space: pre;
+                    line-height: 1.0;
+                    letter-spacing: 0;
+                    font-weight: normal;
+                    font-variant: normal;
+                    text-rendering: optimizeSpeed;
+                }}
+                .status-correct {{ color: #6abf69; font-weight: 600; }}
+                .status-incorrect {{ color: #e57373; font-weight: 600; }}
+                .status-pending {{ color: #ffb74d; font-weight: 600; }}
+                .difficulty-easy {{ color: #81c784; font-weight: 500; }}
+                .difficulty-medium {{ color: #ffb74d; font-weight: 500; }}
+                .difficulty-hard {{ color: #e57373; font-weight: 500; }}
+                .difficulty-contest {{ color: #ba68c8; font-weight: 500; }}
+                b {{ color: #87ceeb; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h2>Today's Math Questions</h2>
+                <p>Total: {total_questions} questions | Completed: {completed_count}</p>
+            </div>
+        """.format(
+            total_questions=len(self.questions),
+            completed_count=self.done_count
+        )
+        
+        # 添加每个题目
         for i, q in enumerate(self.questions):
-            # 题目编号
-            table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            
-            # 难度
+            # 获取题目信息
             difficulty = q.get("difficulty", 2)
             difficulty_names = {1: "Easy", 2: "Medium", 3: "Hard", 4: "Contest"}
-            table.setItem(i, 1, QTableWidgetItem(difficulty_names.get(difficulty, "Medium")))
+            difficulty_name = difficulty_names.get(difficulty, "Medium")
+            difficulty_class = f"difficulty-{difficulty_name.lower()}"
             
-            # 奖励 - 格式化显示
+            # 奖励时间
             reward = q.get("reward_minutes", 1.0)
             if reward == int(reward):
                 reward_display = f"{int(reward)} min"
             else:
                 reward_display = f"{reward:.1f} min"
-            table.setItem(i, 2, QTableWidgetItem(reward_display))
             
-            # 状态 - 基于已完成数量判断
+            # 状态
             if i < self.done_count:
-                # 已完成的题目，检查是否正确
                 is_correct = q.get("is_correct")
                 if is_correct:
-                    status = "Correct ✓"
+                    status = '<span class="status-correct">✓ Correct</span>'
                 else:
-                    status = "Incorrect ✗"
+                    status = '<span class="status-incorrect">✗ Incorrect</span>'
             else:
-                # 未完成的题目
-                status = "Not answered"
-            table.setItem(i, 3, QTableWidgetItem(status))
+                status = '<span class="status-pending">⏳ Not answered</span>'
             
-            # 题目预览
+            # 题目内容 - 使用我们的文本处理方法
             question_text = q.get("question", "")
-            preview = question_text[:100] + "..." if len(question_text) > 100 else question_text
-            # 移除HTML标签用于预览
-            import re
-            preview = re.sub(r'<[^>]+>', '', preview)
-            table.setItem(i, 4, QTableWidgetItem(preview))
+            formatted_question = self.prepare_text_for_display(question_text)
+            
+            # 添加题目卡片
+            html_content += f"""
+            <div class="question-card">
+                <div class="question-header">
+                    <div class="question-number">Question {i + 1}</div>
+                    <div class="question-meta">
+                        <span class="{difficulty_class}">Difficulty: {difficulty_name}</span> | 
+                        <span>Reward: {reward_display}</span>
+                    </div>
+                    <div class="question-meta">
+                        Status: {status}
+                    </div>
+                </div>
+                <div class="question-content">
+                    {formatted_question}
+                </div>
+            </div>
+            """
         
-        # 调整列宽
-        table.resizeColumnsToContents()
-        layout.addWidget(table)
+        html_content += """
+        </body>
+        </html>
+        """
         
-        # 关闭按钮
+        html_display.setHtml(html_content)
+        layout.addWidget(html_display)
+        
+        # 关闭按钮 - 深色主题样式
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.close)
-        layout.addWidget(close_btn)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a4a4a;
+                color: #ffffff;
+                border: 1px solid #6a6a6a;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #5a5a5a;
+                border-color: #7a7a7a;
+            }
+            QPushButton:pressed {
+                background-color: #3a3a3a;
+            }
+        """)
+        button_layout.addWidget(close_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
         
         dialog.exec()
 

@@ -5,4 +5,5 @@ python-dotenv
 numpy
 python-markdown==3.4.3
 psutil==5.9.5
-python-markdown-math 
+python-markdown-math
+httpx 

@@ -243,6 +243,7 @@ You are to generate 10 COMPLETELY NEW and UNIQUE AMC 8 style math questions, str
 - Include AT LEAST 3 geometry questions using DIFFERENT geometric concepts.
 - Geometry questions must include simple, accurate ASCII art diagrams WRAPPED IN CODE BLOCKS using ``` syntax.
 - ASCII art MUST be in the format: ```\n[diagram]\n``` to ensure proper display.
+- ASCII art must be GEOMETRICALLY ACCURATE and PROPERLY ALIGNED.
 
 2. DIFFICULTY & TOPICS
 - Q1-2: Level 1 (AMC8 Q1-5 style) — basic arithmetic, simple geometry, or word problems; topics must differ.
@@ -289,12 +290,29 @@ You are to generate 10 COMPLETELY NEW and UNIQUE AMC 8 style math questions, str
 - Plain text expressions allowed for simple cases (e.g., x^2, x/y) when no special symbols needed.
 - Questions limited to 1-3 sentences, with concrete numbers and realistic scenarios.
 - Geometry ASCII art must:
-  * Use |, -, /, \, +, spaces.
+  * Use ONLY these characters: |, -, /, \\, +, spaces (no other symbols).
   * Label vertices logically (A, B, C, D clockwise or counterclockwise).
   * Show points on edges accurately (e.g., A+---E---+B).
-  * Keep diagrams simple and geometrically accurate.
+  * Keep diagrams simple but GEOMETRICALLY ACCURATE.
   * MUST be wrapped in ``` code blocks within the question text.
-  * Example format: "What is the area of rectangle ABCD?\\n\\n```\\nA+--------+B\\n|          |\\n|          |\\nD+--------+C\\n```"
+  * For rectangles: ALL sides must be EQUAL LENGTH in ASCII (same number of - and | characters).
+  * For triangles: Use proper angles and proportions, vertices should align correctly.
+  * For circles: Use simple representation like O or describe as "circle with center O".
+  * CRITICAL: Count characters carefully to ensure symmetry and accuracy.
+  * RECTANGLE EXAMPLES (must be symmetric):
+    - Small: "```\\nA+----+B\\n|    |\\n|    |\\nD+----+C\\n```" (4 chars wide, 2 tall)
+    - Medium: "```\\nA+--------+B\\n|        |\\n|        |\\n|        |\\nD+--------+C\\n```" (8 chars wide, 3 tall)
+  * TRIANGLE EXAMPLES (vertices must align):
+    - Isosceles: "```\\n    A\\n   / \\\\\\n  /   \\\\\\n /     \\\\\\nB+-----+C\\n```"
+    - Right triangle: "```\\nA+\\n|\\\\\\n| \\\\\\n|  \\\\\\nB+--+C\\n```"
+    - With height: "```\\n    A\\n   /|\\\\\\n  / | \\\\\\n /  |  \\\\\\nB+--D--+C\\n```" (D is foot of altitude)
+  * SPECIAL SHAPES:
+    - Square: "```\\nA+----+B\\n|    |\\n|    |\\n|    |\\nD+----+C\\n```" (equal width and height)
+    - Parallelogram: "```\\n  A+----+B\\n /    /\\n/    /\\nD+----+C\\n```"
+  * MEASUREMENT RULES:
+    - If problem states "AB = 8 cm, BC = 3 cm", make ASCII reflect this ratio
+    - Use proportional character counts: 8:3 ratio ≈ 8 chars : 3 chars
+    - Always count characters to ensure accuracy
 
 CRITICAL JSON OUTPUT RULES:
 - Return ONLY a single valid JSON object, no markdown, no code block, no explanation, no comments.
