@@ -25,9 +25,12 @@ def sha256(s):
     return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 def get_week_start(date=None):
-    """获取周一的日期"""
+    """获取周日的日期（每周从周日凌晨0点开始）"""
     d = date or datetime.date.today()
-    return d - datetime.timedelta(days=d.weekday())
+    # weekday(): 周一=0, 周二=1, ..., 周日=6
+    # 我们希望周日为一周的开始，所以需要调整计算
+    days_since_sunday = (d.weekday() + 1) % 7
+    return d - datetime.timedelta(days=days_since_sunday)
 
 class Database:
     def __init__(self):
@@ -165,6 +168,7 @@ class Database:
                 2: self._upgrade_to_v3,
                 3: self._upgrade_to_v4,
                 4: self._upgrade_to_v5,
+                5: self._upgrade_to_v6,
                 # 添加新的升级版本
             }
             
@@ -296,6 +300,58 @@ class Database:
                 
         self.conn.commit()
         logger.info("成功升级数据库到版本5：添加std_question字段，用于标准化比较")
+
+    def _upgrade_to_v6(self):
+        """升级到版本6：修改reward_minutes字段支持小数"""
+        c = self.conn.cursor()
+        
+        # 检查当前reward_minutes字段类型
+        c.execute("PRAGMA table_info(math_exercises)")
+        columns = {column[1]: column for column in c.fetchall()}
+        
+        if 'reward_minutes' in columns:
+            # SQLite中，我们需要重建表来改变字段类型
+            # 首先备份数据
+            c.execute("""
+                CREATE TABLE math_exercises_backup AS 
+                SELECT id, date, question, answer, is_correct, 
+                       CAST(reward_minutes AS REAL) as reward_minutes, 
+                       explanation, is_gpt, difficulty, std_question 
+                FROM math_exercises
+            """)
+            
+            # 删除原表
+            c.execute("DROP TABLE math_exercises")
+            
+            # 重新创建表，reward_minutes使用REAL类型
+            c.execute('''
+                CREATE TABLE math_exercises (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    answer TEXT,
+                    is_correct INTEGER,
+                    reward_minutes REAL,
+                    explanation TEXT,
+                    is_gpt INTEGER DEFAULT 0,
+                    difficulty INTEGER DEFAULT 2,
+                    std_question TEXT
+                )
+            ''')
+            
+            # 恢复数据
+            c.execute("""
+                INSERT INTO math_exercises 
+                (id, date, question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty, std_question)
+                SELECT id, date, question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty, std_question
+                FROM math_exercises_backup
+            """)
+            
+            # 删除备份表
+            c.execute("DROP TABLE math_exercises_backup")
+        
+        self.conn.commit()
+        logger.info("成功升级数据库到版本6：修改reward_minutes字段支持小数")
 
     def _get_cache_key(self, func_name, *args):
         """生成缓存键"""
@@ -635,7 +691,7 @@ class Database:
                     
                     self.conn.execute(
                         "INSERT INTO math_exercises (date, question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty) VALUES (?, ?, ?, ?, ?, ?, 1, 2)",
-                        (today, q, answer, None, None, explanation)
+                        (today, q, answer, None, 1.0, explanation)
                     )
             
             # 清除相关缓存
@@ -645,39 +701,36 @@ class Database:
             raise
 
     async def clear_today_gpt_questions(self):
-        """清除今天的GPT生成题目缓存"""
+        """清除今天的GPT题目"""
+        today = datetime.date.today().strftime("%Y-%m-%d")
         try:
-            today = datetime.date.today().strftime("%Y-%m-%d")
-            
-            # 先获取今天的题目，看看有多少会被删除
-            query_check = "SELECT COUNT(*) FROM math_exercises WHERE date=?"
-            count_result = await self.execute_query(query_check, (today,), fetchone=True)
-            count = count_result[0] if count_result else 0
-            
-            # 记录删除操作
-            logger.info(f"即将删除今日所有数学练习记录: {today}, 共{count}条")
-            
-            # 清除所有今日记录，包括用户回答的记录
-            query = "DELETE FROM math_exercises WHERE date=?"
-            await self.execute_query(query, (today,), commit=True)
-            
-            # 再次检查，确保删除成功
-            query_check = "SELECT COUNT(*) FROM math_exercises WHERE date=?"
-            count_result = await self.execute_query(query_check, (today,), fetchone=True)
-            count_after = count_result[0] if count_result else 0
-            logger.info(f"[DEBUG] 清除今日所有数学练习记录完成: 删除前={count}, 删除后={count_after}")
-            
-            # 清除相关缓存
-            self._invalidate_cache("get_today_math")
-            self._invalidate_cache("get_today_math_exercises")
-            self._invalidate_cache("get_today_math_reward")
-            self._invalidate_cache("get_today_gpt_questions")
-            
-            # 返回删除的记录数
-            return count
+            await self.execute_query(
+                "DELETE FROM math_exercises WHERE date = ? AND is_gpt = 1",
+                (today,),
+                commit=True
+            )
+            logger.info(f"已清除今天的GPT题目: {today}")
         except Exception as e:
-            logger.error(f"清除GPT题目缓存错误: {e}")
+            logger.error(f"清除今天的GPT题目失败: {e}")
             raise
+
+    async def get_recent_gpt_questions(self, days=30):
+        """获取最近几天的GPT题目用于避免重复"""
+        cutoff_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            result = await self.execute_query(
+                """SELECT id, date, question, answer, is_correct, reward_minutes, 
+                          explanation, is_gpt, difficulty 
+                   FROM math_exercises 
+                   WHERE date >= ? AND is_gpt = 1 
+                   ORDER BY date DESC""",
+                (cutoff_date,)
+            )
+            logger.info(f"获取最近{days}天的GPT题目，共{len(result)}道")
+            return result
+        except Exception as e:
+            logger.error(f"获取最近GPT题目失败: {e}")
+            return []
 
     async def get_cached_explanation(self, question, wrong_answer):
         """从缓存中获取解释"""
@@ -744,12 +797,20 @@ class Database:
                 self.cache.clear()
                 self.cache_timeout.clear()
                 
+                # 提交任何未提交的事务
+                try:
+                    self.conn.commit()
+                except sqlite3.Error:
+                    pass  # 忽略提交错误
+                
                 # 关闭连接
                 self.conn.close()
                 self.conn = None
                 logger.info("数据库连接已关闭")
             except Exception as e:
                 logger.error(f"关闭数据库连接失败: {e}")
+                # 强制设置为None，确保不会重复关闭
+                self.conn = None
 
     def reconnect(self):
         """重新连接数据库（如果已关闭）"""

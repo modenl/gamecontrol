@@ -69,14 +69,35 @@ class WindowMonitor:
                 self.monitor_task.cancel()
                 # 等待任务实际取消
                 try:
-                    await self.monitor_task
+                    await asyncio.wait_for(self.monitor_task, timeout=2.0)
                 except asyncio.CancelledError:
-                    pass
-                self.monitor_task = None
+                    logger.info("监控任务被取消")
+                except asyncio.TimeoutError:
+                    logger.warning("监控任务取消超时，强制停止")
+                except Exception as e:
+                    logger.error(f"等待监控任务取消时出错: {e}")
+                finally:
+                    self.monitor_task = None
             except Exception as e:
                 logger.error(f"取消监控任务时出错: {e}")
+                self.monitor_task = None
         
         logger.info("窗口监控已完全停止")
+    
+    def stop_monitoring_sync(self):
+        """同步停止监控（用于应用退出时）"""
+        logger.info("同步停止窗口监控...")
+        self.is_running = False
+        
+        if self.monitor_task:
+            try:
+                self.monitor_task.cancel()
+                self.monitor_task = None
+                logger.info("监控任务已取消")
+            except Exception as e:
+                logger.error(f"同步取消监控任务时出错: {e}")
+        
+        logger.info("窗口监控已同步停止")
         
     async def _monitor_loop(self):
         """监控循环"""

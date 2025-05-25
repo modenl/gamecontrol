@@ -47,14 +47,18 @@ class ToolTip(QWidget):
         
     def eventFilter(self, obj, event):
         """事件过滤器，处理鼠标事件"""
-        if obj == self.parent:
-            event_type = event.type()
-            if event_type == event.Type.Enter:
-                self.timer.start(self.delay)
-            elif event_type in (event.Type.Leave, event.Type.MouseButtonPress):
-                self.timer.stop()
-                self.hide()
-        return super().eventFilter(obj, event)
+        try:
+            if obj == self.parent:
+                event_type = event.type()
+                if event_type == event.Type.Enter:
+                    self.timer.start(self.delay)
+                elif event_type in (event.Type.Leave, event.Type.MouseButtonPress):
+                    self.timer.stop()
+                    self.hide()
+            return super().eventFilter(obj, event)
+        except Exception as e:
+            # 如果事件处理出错，返回False让事件继续传播
+            return False
         
     def show_tip(self):
         """显示提示框"""

@@ -82,12 +82,12 @@ class MathExercises:
                 for q in latest_questions.values():
                     try:
                         difficulty = None
-                        reward_minutes = 2  # 默认奖励时间
+                        reward_minutes = 1.0  # 默认奖励时间
                         if len(q) > 8:
                             difficulty = q[8]  # difficulty在索引8
                             logger.debug(f"从数据库加载题目，ID={q[0]}，难度={difficulty}")
                         if len(q) > 5:
-                            reward_minutes = q[5] if q[5] is not None else 2  # reward_minutes在索引5
+                            reward_minutes = q[5] if q[5] is not None else 1.0  # reward_minutes在索引5
                             logger.debug(f"从数据库加载题目，ID={q[0]}，奖励时间={reward_minutes}分钟")
                         
                         # 添加到题目列表，确保所有字段都有有效值
@@ -166,7 +166,7 @@ class MathExercises:
                     for q in today_questions:
                         # 详细记录从数据库加载的题目难度和奖励时间
                         difficulty = q[8] if len(q) > 8 and q[8] is not None else None
-                        reward_minutes = q[5] if len(q) > 5 and q[5] is not None else 2
+                        reward_minutes = q[5] if len(q) > 5 and q[5] is not None else 1.0
                         logger.debug(f"从数据库加载题目ID={q[0]}，难度={difficulty}，奖励时间={reward_minutes}分钟")
                         
                         question_obj = {
@@ -270,18 +270,23 @@ You are to generate 10 COMPLETELY NEW and UNIQUE AMC 8 style math questions, str
 - Avoid complex decimals or overly long answers.
 
 4. REWARD MINUTES
-- Assign reward minutes (1-5) based on actual question complexity and time needed:
-  * 1 minute: Very simple calculations, basic arithmetic
-  * 2 minutes: Straightforward problems requiring one or two steps
-  * 3 minutes: Moderate complexity, some reasoning or multiple steps
-  * 4 minutes: Complex multi-step problems requiring significant thinking
-  * 5 minutes: Most challenging problems, competition-level difficulty
-- Consider both conceptual difficulty and time investment required
-- Balance rewards: not all Level 1 questions need same reward, not all Level 4 questions deserve 5 minutes
+- Assign reward minutes (0.5-5) based on actual question complexity and time needed (approximately half of solving time):
+  * 0.5 minutes: Very simple calculations, basic arithmetic (1-2 min solving time)
+  * 1 minute: Simple problems requiring one step (2-3 min solving time)
+  * 1.5 minutes: Straightforward problems requiring two steps (3-4 min solving time)
+  * 2 minutes: Moderate complexity, some reasoning (4-5 min solving time)
+  * 2.5 minutes: Multi-step problems with moderate thinking (5-6 min solving time)
+  * 3 minutes: Complex problems requiring significant reasoning (6-7 min solving time)
+  * 4 minutes: Very challenging multi-step problems (8-9 min solving time)
+  * 5 minutes: Most challenging competition-level problems (10+ min solving time)
+- Consider both conceptual difficulty and actual time investment required
+- Reward should be approximately half of the expected solving time
+- Use decimal values (0.5, 1.5, 2.5, etc.) for more precise reward allocation
 
 5. FORMATTING
-- Use LaTeX formatting: \\( ... \\) inline, \\[ ... \\] display math.
-- Plain text expressions allowed for simple cases (e.g., x^2, x/y).
+- IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensure consistent LaTeX rendering.
+- Do NOT use \\( ... \\) or \\[ ... \\] formats - use ONLY $$...$$ for all math.
+- Plain text expressions allowed for simple cases (e.g., x^2, x/y) when no special symbols needed.
 - Questions limited to 1-3 sentences, with concrete numbers and realistic scenarios.
 - Geometry ASCII art must:
   * Use |, -, /, \, +, spaces.
@@ -315,7 +320,7 @@ CRITICAL JSON OUTPUT RULES:
       "question": "In triangle PQR, angle P is 40° and angle Q is 75°. What is the measure of angle R in degrees?\\n\\n```\\nP+---+Q\\n|   /|\\n|  / |\\n| /  |\\nR----+\\n```",
       "answer": "65",
       "difficulty": 1,
-      "reward_minutes": 2
+                                  "reward_minutes": 1.0
     }}
     // ...8 more
   ]
@@ -332,7 +337,10 @@ Timestamp: {now_str}
 
             # 发送单一请求，增加随机性
             logger.info("发送单一请求生成全部10道AMC8风格题目")
-            response = await asyncio.to_thread(
+            try:
+                # 添加超时设置，防止请求挂起
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
                 openai.chat.completions.create,
                 model="gpt-4.1-mini",
                 messages=[
@@ -342,36 +350,45 @@ Timestamp: {now_str}
                 temperature=1.3,  # 增加随机性
                 top_p=0.9,       # 增加创造性
                 frequency_penalty=0.3,  # 减少重复
-                presence_penalty=0.2    # 鼓励新颖性
-            )
+                        presence_penalty=0.2,   # 鼓励新颖性
+                        response_format={"type": "json_object"},  # 强制返回JSON格式
+                        timeout=60  # 设置60秒超时
+                    ),
+                    timeout=90  # 总超时时间90秒
+                )
+                logger.info("OpenAI API请求成功完成")
+            except asyncio.TimeoutError:
+                logger.error("OpenAI API请求超时")
+                raise ValueError("OpenAI API请求超时，请检查网络连接")
+            except Exception as api_error:
+                logger.error(f"OpenAI API请求失败: {str(api_error)}")
+                logger.exception("详细API错误信息:")
+                raise ValueError(f"OpenAI API请求失败: {str(api_error)}")
             
-            # 解析题目
-            logger.info(f"[DEBUG] OpenAI response: {response.choices[0].message.content}")
-            
-            # 预处理响应内容以处理LaTeX格式和markdown代码块
-            processed_content = self._preprocess_gpt_response(response.choices[0].message.content)
-            logger.debug(f"[DEBUG] Processed content: {processed_content}")
+            # 解析题目 - 使用JSON格式强制返回
+            raw_content = response.choices[0].message.content
+            logger.info(f"[DEBUG] OpenAI response: {raw_content}")
             
             try:
-                result = json.loads(processed_content)
-                # 解码JSON转义序列
-                result = self._decode_json_escaped_strings(result)
+                # 由于使用了response_format="json_object"，应该直接是有效的JSON
+                result = json.loads(raw_content)
+                logger.info("JSON解析成功")
             except json.JSONDecodeError as e:
-                logger.error(f"JSON解析失败，位置: {e.pos}, 错误: {e.msg}")
-                logger.error(f"处理后的内容长度: {len(processed_content)}")
-                logger.error(f"错误位置周围的内容: ...{processed_content[max(0, e.pos-50):e.pos+50]}...")
+                logger.error(f"JSON解析失败: {e}")
+                logger.error(f"响应内容: {raw_content}")
                 
-                # 尝试更激进的修复
-                try:
-                    # 移除所有多余的引号和转义
-                    fixed_content = self._aggressive_json_fix(processed_content)
-                    logger.info("尝试激进修复JSON格式")
-                    result = json.loads(fixed_content)
-                    result = self._decode_json_escaped_strings(result)
-                    logger.info("激进修复成功！")
-                except Exception as fix_error:
-                    logger.error(f"激进修复也失败: {fix_error}")
-                    raise ValueError("OpenAI返回内容无法解析为JSON，即使经过修复也失败。原始内容已写入日志。")
+                # 记录详细的JSON解析错误信息
+                json_error_details = {
+                    "error_type": "JSONDecodeError",
+                    "error_message": str(e),
+                    "response_length": len(raw_content),
+                    "response_preview": raw_content[:500] if raw_content else "Empty response",
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                logger.error(f"JSON解析失败详情: {json_error_details}")
+                
+                # 不使用任何备用方案，直接抛出错误
+                raise ValueError(f"OpenAI返回的不是有效的JSON格式: {str(e)}")
             all_questions = result.get("questions", [])
             logger.info(f"[DEBUG] Generated questions count: {len(all_questions)}")
             
@@ -384,7 +401,7 @@ Timestamp: {now_str}
             # 转换为我们的数据结构
             for q in all_questions:
                 difficulty = q.get("difficulty")
-                reward_minutes = q.get("reward_minutes", 2)  # 默认2分钟
+                reward_minutes = q.get("reward_minutes", 1.0)  # 默认1分钟
                 logger.debug(f"从GPT获取题目：问题={q['question'][:30]}...，难度={difficulty}，奖励={reward_minutes}分钟")
                 
                 # 后处理题目文本，转换LaTeX格式
@@ -433,7 +450,7 @@ Timestamp: {now_str}
                     """INSERT INTO math_exercises 
                         (date, question, std_question, answer, is_correct, reward_minutes, explanation, is_gpt, difficulty) 
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (today, original_question, std_question, q["answer"], None, q.get("reward_minutes", 2), "", 1, difficulty)
+                    (today, original_question, std_question, q["answer"], None, q.get("reward_minutes", 1.0), "", 1, difficulty)
                 )
             self.db.conn.commit()
             # 检查并清理多余题目，只保留最新10道
@@ -450,6 +467,20 @@ Timestamp: {now_str}
             
         except Exception as e:
             logger.error(f"生成题目时出错: {e}")
+            logger.exception("详细错误信息:")
+            
+            # 记录详细的错误信息用于调试
+            error_details = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "api_key_exists": bool(openai.api_key),
+                "api_key_length": len(openai.api_key) if openai.api_key else 0,
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            
+            logger.error(f"题目生成失败详情: {error_details}")
+            
+            # 不使用备用题目，直接抛出错误让调用者处理
             self.api_error = f"生成题目时出错: {str(e)}"
             raise
     
@@ -494,7 +525,7 @@ Timestamp: {now_str}
         question = question_obj["question"]
         standard_answer = question_obj["answer"]
         difficulty = question_obj["difficulty"]
-        reward_minutes = question_obj.get("reward_minutes", 2)  # 使用GPT指定的奖励时间，默认2分钟
+        reward_minutes = question_obj.get("reward_minutes", 1.0)  # 使用GPT指定的奖励时间，默认1分钟
         
         if not standard_answer:
             raise ValueError("无法获取标准答案")
@@ -550,7 +581,7 @@ Timestamp: {now_str}
         """使用GPT检查答案 - 改进错误处理"""
         question = question_obj["question"]
         standard_answer = question_obj["answer"]
-        reward_minutes = question_obj.get("reward_minutes", 2)
+        reward_minutes = question_obj.get("reward_minutes", 1.0)
         
         prompt = f"""Please check if the student's answer is correct.
 
@@ -566,17 +597,24 @@ Please return the result in this exact JSON format:
 
 If the answer is correct, set is_correct to true.
 If the answer is incorrect, set is_correct to false and provide a detailed explanation of why it's wrong and show the correct solution process.
+
+IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensure consistent LaTeX rendering.
 """
 
         try:
-            response = await asyncio.to_thread(
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
                 openai.chat.completions.create,
                 model="gpt-4.1-mini",
                 messages=[
                     {"role": "system", "content": "You are a math teacher responsible for checking student answers. Please return results in JSON format."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=1.2
+                    temperature=1.2,
+                    response_format={"type": "json_object"},  # 强制返回JSON格式
+                    timeout=30  # 设置30秒超时
+                ),
+                timeout=45  # 总超时时间45秒
             )
             
             # 检查响应是否有效
@@ -591,21 +629,9 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
             
             logger.debug(f"GPT原始响应: {content}")
             
-            # 预处理内容，移除markdown代码块标记
-            processed_content = content.strip()
-            if processed_content.startswith('```json'):
-                processed_content = processed_content[7:]  # 移除开头的 ```json
-            elif processed_content.startswith('```'):
-                processed_content = processed_content[3:]   # 移除开头的 ```
-            
-            if processed_content.endswith('```'):
-                processed_content = processed_content[:-3]  # 移除结尾的 ```
-            
-            processed_content = processed_content.strip()
-            logger.debug(f"处理后的内容: {processed_content}")
-            
+            # 由于使用了response_format={"type": "json_object"}，应该直接是有效的JSON
             try:
-                result = json.loads(processed_content)
+                result = json.loads(content)
                 is_correct = result.get("is_correct", False)
                 explanation = result.get("explanation", "")
                 
@@ -625,11 +651,11 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
                 return is_correct, explanation
                 
             except json.JSONDecodeError as e:
-                logger.error(f"GPT返回的不是有效的JSON格式: {processed_content}")
+                logger.error(f"GPT返回的不是有效的JSON格式: {content}")
                 logger.error(f"JSON解析错误: {str(e)}")
                 
                 # 尝试提取有用信息作为备用方案
-                content_lower = processed_content.lower()
+                content_lower = content.lower()
                 if "is_correct\": true" in content_lower or "correct" in content_lower:
                     # 可能是正确答案
                     is_correct = True
@@ -637,7 +663,7 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
                 else:
                     # 可能是错误答案
                     is_correct = False
-                    explanation = f"GPT响应格式异常，无法解析答案正确性。原始响应: {processed_content[:200]}..."
+                    explanation = f"GPT响应格式异常，无法解析答案正确性。原始响应: {content[:200]}..."
                 
                 # 使用备用方案记录结果
                 reward = reward_minutes if is_correct else 0
@@ -733,17 +759,30 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
             return cached
         try:
             # 使用OpenAI API获取解释
-            response = await asyncio.to_thread(
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
                 openai.chat.completions.create,
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "You are a math teacher. Please explain the student's answer and give a complete correct solution process. All in English."},
+                        {"role": "system", "content": "You are a math teacher. Please explain the student's answer and give a complete correct solution process. All in English. Return your response as a JSON object with an 'explanation' field. IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensure consistent LaTeX rendering."},
                     {"role": "user", "content": f"Question: {question}\n\nStudent's answer: {user_answer}\n\nCorrect answer: {standard_answer}\n\nPlease explain why the student's answer is wrong and provide a complete correct solution process."}
                 ],
-                temperature=1.2
+                    temperature=1.2,
+                    response_format={"type": "json_object"},  # 强制返回JSON格式
+                    timeout=30  # 设置30秒超时
+                ),
+                timeout=45  # 总超时时间45秒
             )
             
-            explanation = response.choices[0].message.content
+            content = response.choices[0].message.content
+            try:
+                # 解析JSON响应
+                result = json.loads(content)
+                explanation = result.get("explanation", content)  # 如果没有explanation字段，使用原始内容
+            except json.JSONDecodeError:
+                # 如果JSON解析失败，使用原始内容
+                explanation = content
+            
             await self.db.cache_explanation(question, user_answer, explanation)
             return explanation
         except Exception as e:
@@ -827,7 +866,7 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
                 'answer': q['answer'],
                 'explanation': q.get('explanation', ''),
                 'difficulty': q.get('difficulty', 2),  # 默认难度2
-                'reward_minutes': q.get('reward_minutes', 2)  # 添加奖励分钟数字段
+                'reward_minutes': q.get('reward_minutes', 1.0)  # 添加奖励分钟数字段
             }
             result.append(question_data)
             
@@ -858,66 +897,7 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         """重新生成今天的题目 (兼容版本)"""
         return await self.regenerate_daily_questions_async()
 
-    def _preprocess_gpt_response(self, response_content):
-        """预处理GPT响应，处理markdown代码块和修复JSON格式问题"""
-        content = response_content.strip()
-        
-        # 移除markdown代码块包装
-        if content.startswith('```json'):
-            content = content[7:]  # 移除开头的 ```json
-        elif content.startswith('```'):
-            content = content[3:]   # 移除开头的 ```
-        
-        if content.endswith('```'):
-            content = content[:-3]  # 移除结尾的 ```
-        
-        content = content.strip()
-        
-        # 修复常见的JSON格式问题
-        import re
-        
-        # 1. 修复混合引号问题 - 这是新的GPT响应中最常见的问题
-        # 将 \"property_name\" 转换为 "property_name"
-        content = re.sub(r'\\\"([^\\\"]+)\\\":', r'"\1":', content)
-        
-        # 2. 修复字段值中的混合引号
-        # 将 : \"value\" 转换为 : "value"
-        content = re.sub(r': \\\"([^\\\"]+)\\\"', r': "\1"', content)
-        
-        # 3. 修复数组或对象结尾的混合引号
-        # 将 \"value\", 转换为 "value",
-        content = re.sub(r'\\\"([^\\\"]+)\\\",', r'"\1",', content)
-        # 将 \"value\" } 转换为 "value" }
-        content = re.sub(r'\\\"([^\\\"]+)\\\"(\s*[}\]])', r'"\1"\2', content)
-        
-        # 4. 修复双重引号问题：将 "\"text\"" 转换为 "text"
-        content = re.sub(r'\"\\\"([^\"\\]*)\\\"\"', r'"\1"', content)
-        
-        # 5. 修复LaTeX表达式中的反斜杠问题
-        # 确保反斜杠在JSON字符串中正确转义
-        def fix_latex_escapes(match):
-            latex_content = match.group(1)
-            # 对反斜杠进行双重转义，适合JSON
-            latex_content = latex_content.replace('\\', '\\\\')
-            return f'"\\\\({latex_content})"'
-        
-        # 修复 \(...\) 格式的LaTeX
-        content = re.sub(r'"\\?\\\(([^)]+)\\?\\\)"', fix_latex_escapes, content)
-        
-        # 6. 修复分数表达式
-        def fix_frac_escapes(match):
-            frac_content = match.group(1)
-            # 确保反斜杠正确转义
-            frac_content = frac_content.replace('\\', '\\\\')
-            return f'"{frac_content}"'
-        
-        content = re.sub(r'"(\\\\frac\{[^}]+\}\{[^}]+\})"', fix_frac_escapes, content)
-        
-        # 7. 修复其他常见的转义问题
-        # 确保换行符正确转义
-        content = re.sub(r'(?<!\\)\n(?![^"]*"[^"]*:)', '\\n', content)
-        
-        return content
+
     
     def _postprocess_question_text(self, question_text):
         """后处理题目文本，转换LaTeX格式为KaTeX支持的格式"""
@@ -933,86 +913,10 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         
         return text
 
-    def _aggressive_json_fix(self, content):
-        """激进的JSON修复方法"""
-        import re
-        
-        # 0. 首先处理最常见的混合引号问题
-        # 将所有 \"property_name\" 转换为 "property_name"
-        content = re.sub(r'\\\"([^\\\"]+)\\\":', r'"\1":', content)
-        # 将所有值中的混合引号转换
-        content = re.sub(r': \\\"([^\\\"]+)\\\"', r': "\1"', content)
-        content = re.sub(r'\\\"([^\\\"]+)\\\",', r'"\1",', content)
-        content = re.sub(r'\\\"([^\\\"]+)\\\"(\s*[}\]])', r'"\1"\2', content)
-        
-        # 1. 修复被额外引号包围的字符串
-        # 例如: "\"text\"" -> "text"
-        content = re.sub(r'\"(\\\"[^\"]*\\\")\"', r'\1', content)
-        
-        # 2. 简化复杂的转义序列
-        # 将 \\\" 简化为 \"
-        content = content.replace('\\\\\"', '\\\"')
-        
-        # 3. 处理数字值中可能存在的引号问题
-        # 将 \"4 转换为 4 (去除数字前的转义引号)
-        content = re.sub(r'\\\"(\d+)', r'\1', content)
-        # 将 4\" 转换为 4 (去除数字后的转义引号)  
-        content = re.sub(r'(\d+)\\\"', r'\1', content)
-        
-        # 4. 修复LaTeX表达式的转义
-        # 将 \\frac{...}{...} 正确转义
-        def fix_latex_fraction(match):
-            frac = match.group(0)
-            # 确保正确的转义级别
-            return frac.replace('\\', '\\\\')
-        
-        content = re.sub(r'\\frac\{[^}]+\}\{[^}]+\}', fix_latex_fraction, content)
-        
-        # 5. 修复LaTeX括号表达式
-        # 将 \(...\) 正确转义为 \\(...\\)
-        def fix_latex_parens(match):
-            inner = match.group(1)
-            return f'\\\\({inner}\\\\)'
-        
-        content = re.sub(r'\\\(([^)]+)\\\)', fix_latex_parens, content)
-        
-        # 6. 清理多余的转义
-        # 移除不必要的双重转义
-        content = re.sub(r'\\\\(\\[^\\])', r'\\\1', content)
-        
-        # 7. 最后的清理 - 确保所有字段名都有正确的引号
-        # 修复可能遗漏的字段名引号问题
-        content = re.sub(r'(\s+)([a-zA-Z_]+)(\s*):', r'\1"\2"\3:', content)
-        
-        return content
 
-    def _decode_json_escaped_strings(self, data):
-        """解码JSON转义序列"""
-        if isinstance(data, dict):
-            result = {}
-            for key, value in data.items():
-                result[key] = self._decode_json_escaped_strings(value)
-            return result
-        elif isinstance(data, list):
-            return [self._decode_json_escaped_strings(item) for item in data]
-        elif isinstance(data, str):
-            # 手动处理JSON转义序列
-            try:
-                # 按照正确的顺序处理转义序列，避免重复转换
-                decoded = data
-                # 先处理双重转义的反斜杠
-                decoded = decoded.replace('\\\\', '\x00BACKSLASH\x00')  # 临时占位符
-                # 处理其他转义序列
-                decoded = decoded.replace('\\n', '\n')      # 换行符
-                decoded = decoded.replace('\\r', '\r')      # 回车符
-                decoded = decoded.replace('\\t', '\t')      # 制表符
-                decoded = decoded.replace('\\"', '"')       # 双引号
-                decoded = decoded.replace('\\/', '/')       # 斜杠
-                # 最后恢复反斜杠
-                decoded = decoded.replace('\x00BACKSLASH\x00', '\\')
-                return decoded
-            except Exception as e:
-                logger.warning(f"解码JSON转义序列失败: {e}, 返回原字符串")
-                return data
-        else:
-            return data 
+
+
+    
+
+
+ 

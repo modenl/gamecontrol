@@ -32,7 +32,7 @@ from logic.game_limiter import GameLimiter
 from logic.database import sha256
 from logic.window_monitor import WindowMonitor
 from ui.base import StatusBar, SessionTimer, OverlayWindow, ShakeEffect
-from ui.math_panel import MathPanel
+from ui.math_panel_simple import SimpleMathPanel
 from ui.admin_panel import AdminPanel
 from ui.history_panel import HistoryPanel
 
@@ -224,11 +224,11 @@ class MainWindow(QMainWindow):
             return
             
         logger.info("打开数学练习面板")
-        self.math_panel = MathPanel(self)
+        self.math_panel = SimpleMathPanel(self)
         self.math_panel.on_complete_signal.connect(self.on_math_complete)
         self.math_panel.show()
 
-    def on_math_complete(self, reward_minutes: int = 0) -> None:
+    def on_math_complete(self, reward_minutes: float = 0) -> None:
         """数学练习完成回调"""
         logger.info(f"数学练习完成，奖励分钟数: {reward_minutes}")
         self.refresh_weekly_status_async()
@@ -428,21 +428,36 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """窗口关闭事件"""
         try:
-            logger.info("窗口关闭事件触发，准备停止监控并验证管理员密码")
-            self.run_async(self.window_monitor.stop_monitoring())
+            logger.info("窗口关闭事件触发，验证管理员密码")
+            
+            # 首先停止窗口监控，避免异步问题
+            if hasattr(self, 'window_monitor') and self.window_monitor.is_running:
+                logger.info("停止窗口监控...")
+                self.window_monitor.is_running = False
+                if self.window_monitor.monitor_task:
+                    self.window_monitor.monitor_task.cancel()
+            
+            # 验证管理员密码
             password, ok = QInputDialog.getText(self, "Administrator Verification", "Please enter administrator password:", QLineEdit.EchoMode.Password)
             if ok and password:
                 if sha256(password) == ADMIN_PASS_HASH:
                     if self.session_active:
                         confirm = QMessageBox.question(self, "Confirm Exit", "A game Session is currently in progress. Exiting will end the current Session.\n\nAre you sure you want to exit?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                         if confirm == QMessageBox.StandardButton.Yes:
-                            self.run_async(self.end_session())
-                            self.game_limiter.close()
+                            # 结束会话
+                            logger.info("强制结束活动会话...")
+                            self.session_active = False
+                            if hasattr(self, 'session_timer'):
+                                self.session_timer.stop()
+                            
+                            # 简单清理并强制退出
+                            self._force_exit()
                             event.accept()
                         else:
                             event.ignore()
                     else:
-                        self.game_limiter.close()
+                        # 简单清理并强制退出
+                        self._force_exit()
                         event.accept()
                 else:
                     self.show_warning("Incorrect administrator password, unable to close application.")
@@ -452,6 +467,87 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"关闭窗口时出错: {e}")
             event.ignore()
+    
+    def _force_exit(self):
+        """强制退出应用程序"""
+        try:
+            logger.info("开始强制退出...")
+            
+            # 重置鼠标设置到系统默认值
+            try:
+                app = QApplication.instance()
+                if app:
+                    logger.info("重置鼠标设置...")
+                    app.setDoubleClickInterval(500)  # 重置为系统默认值
+                    app.setStartDragDistance(4)      # 重置为默认值
+                    app.setStartDragTime(500)        # 重置为默认值
+                    app.processEvents()              # 处理事件确保设置生效
+            except Exception as e:
+                logger.error(f"重置鼠标设置时出错: {e}")
+            
+            # 简单清理
+            try:
+                if hasattr(self, 'game_limiter') and self.game_limiter:
+                    self.game_limiter.close()
+            except:
+                pass
+            
+            logger.info("立即强制退出应用程序")
+            
+            # 立即强制退出整个应用程序
+            import os
+            os._exit(0)
+            
+        except Exception as e:
+            logger.error(f"强制退出时出错: {e}")
+            # 即使出错也要强制退出
+            import os
+            os._exit(1)
+    
+    def cleanup_resources(self):
+        """清理窗口资源"""
+        try:
+            logger.info("清理主窗口资源...")
+            
+            # 停止所有计时器
+            if hasattr(self, 'session_timer'):
+                self.session_timer.stop()
+            
+            # 关闭倒计时窗口
+            if hasattr(self, 'countdown_window') and self.countdown_window:
+                self.countdown_window.close()
+                self.countdown_window = None
+            
+            # 关闭所有子面板
+            for attr_name in ['admin_panel', 'math_panel', 'history_panel']:
+                if hasattr(self, attr_name):
+                    panel = getattr(self, attr_name)
+                    if panel and hasattr(panel, 'close'):
+                        try:
+                            panel.close()
+                        except:
+                            pass
+            
+            # 清理应用程序资源
+            try:
+                logger.info("清理应用程序资源...")
+                
+                # 处理所有待处理的Qt事件
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app:
+                    app.processEvents()
+                        
+            except Exception as e:
+                logger.error(f"清理应用程序资源时出错: {e}")
+            
+            # 关闭游戏限制器
+            if hasattr(self, 'game_limiter') and self.game_limiter:
+                self.game_limiter.close()
+                
+            logger.info("主窗口资源清理完成")
+        except Exception as e:
+            logger.error(f"清理主窗口资源时出错: {e}")
 
     def delayed_start_monitoring(self) -> None:
         """延迟启动窗口监控器"""
