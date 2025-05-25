@@ -876,10 +876,24 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         # 修复常见的JSON格式问题
         import re
         
-        # 1. 修复双重引号问题：将 "\"text\"" 转换为 "text"
+        # 1. 修复混合引号问题 - 这是新的GPT响应中最常见的问题
+        # 将 \"property_name\" 转换为 "property_name"
+        content = re.sub(r'\\\"([^\\\"]+)\\\":', r'"\1":', content)
+        
+        # 2. 修复字段值中的混合引号
+        # 将 : \"value\" 转换为 : "value"
+        content = re.sub(r': \\\"([^\\\"]+)\\\"', r': "\1"', content)
+        
+        # 3. 修复数组或对象结尾的混合引号
+        # 将 \"value\", 转换为 "value",
+        content = re.sub(r'\\\"([^\\\"]+)\\\",', r'"\1",', content)
+        # 将 \"value\" } 转换为 "value" }
+        content = re.sub(r'\\\"([^\\\"]+)\\\"(\s*[}\]])', r'"\1"\2', content)
+        
+        # 4. 修复双重引号问题：将 "\"text\"" 转换为 "text"
         content = re.sub(r'\"\\\"([^\"\\]*)\\\"\"', r'"\1"', content)
         
-        # 2. 修复LaTeX表达式中的反斜杠问题
+        # 5. 修复LaTeX表达式中的反斜杠问题
         # 确保反斜杠在JSON字符串中正确转义
         def fix_latex_escapes(match):
             latex_content = match.group(1)
@@ -890,7 +904,7 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         # 修复 \(...\) 格式的LaTeX
         content = re.sub(r'"\\?\\\(([^)]+)\\?\\\)"', fix_latex_escapes, content)
         
-        # 3. 修复分数表达式
+        # 6. 修复分数表达式
         def fix_frac_escapes(match):
             frac_content = match.group(1)
             # 确保反斜杠正确转义
@@ -899,7 +913,7 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         
         content = re.sub(r'"(\\\\frac\{[^}]+\}\{[^}]+\})"', fix_frac_escapes, content)
         
-        # 4. 修复其他常见的转义问题
+        # 7. 修复其他常见的转义问题
         # 确保换行符正确转义
         content = re.sub(r'(?<!\\)\n(?![^"]*"[^"]*:)', '\\n', content)
         
@@ -923,6 +937,14 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         """激进的JSON修复方法"""
         import re
         
+        # 0. 首先处理最常见的混合引号问题
+        # 将所有 \"property_name\" 转换为 "property_name"
+        content = re.sub(r'\\\"([^\\\"]+)\\\":', r'"\1":', content)
+        # 将所有值中的混合引号转换
+        content = re.sub(r': \\\"([^\\\"]+)\\\"', r': "\1"', content)
+        content = re.sub(r'\\\"([^\\\"]+)\\\",', r'"\1",', content)
+        content = re.sub(r'\\\"([^\\\"]+)\\\"(\s*[}\]])', r'"\1"\2', content)
+        
         # 1. 修复被额外引号包围的字符串
         # 例如: "\"text\"" -> "text"
         content = re.sub(r'\"(\\\"[^\"]*\\\")\"', r'\1', content)
@@ -931,7 +953,13 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         # 将 \\\" 简化为 \"
         content = content.replace('\\\\\"', '\\\"')
         
-        # 3. 修复LaTeX表达式的转义
+        # 3. 处理数字值中可能存在的引号问题
+        # 将 \"4 转换为 4 (去除数字前的转义引号)
+        content = re.sub(r'\\\"(\d+)', r'\1', content)
+        # 将 4\" 转换为 4 (去除数字后的转义引号)  
+        content = re.sub(r'(\d+)\\\"', r'\1', content)
+        
+        # 4. 修复LaTeX表达式的转义
         # 将 \\frac{...}{...} 正确转义
         def fix_latex_fraction(match):
             frac = match.group(0)
@@ -940,7 +968,7 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         
         content = re.sub(r'\\frac\{[^}]+\}\{[^}]+\}', fix_latex_fraction, content)
         
-        # 4. 修复LaTeX括号表达式
+        # 5. 修复LaTeX括号表达式
         # 将 \(...\) 正确转义为 \\(...\\)
         def fix_latex_parens(match):
             inner = match.group(1)
@@ -948,9 +976,13 @@ If the answer is incorrect, set is_correct to false and provide a detailed expla
         
         content = re.sub(r'\\\(([^)]+)\\\)', fix_latex_parens, content)
         
-        # 5. 清理多余的转义
+        # 6. 清理多余的转义
         # 移除不必要的双重转义
         content = re.sub(r'\\\\(\\[^\\])', r'\\\1', content)
+        
+        # 7. 最后的清理 - 确保所有字段名都有正确的引号
+        # 修复可能遗漏的字段名引号问题
+        content = re.sub(r'(\s+)([a-zA-Z_]+)(\s*):', r'\1"\2"\3:', content)
         
         return content
 
