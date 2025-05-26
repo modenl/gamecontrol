@@ -39,7 +39,27 @@ except ImportError:
     APP_DISPLAY_NAME = "Game Time Limiter"
     
     def is_newer_version(current, new):
-        return current != new
+        """检查新版本是否比当前版本更新
+        
+        Args:
+            current (str): 当前版本，格式如 "1.0.4"
+            new (str): 新版本，格式如 "1.0.3"
+        
+        Returns:
+            bool: 如果新版本更新则返回True
+        """
+        def parse_version(version_str):
+            # 移除v前缀和预发布信息，只比较主版本号
+            clean_version = version_str.lstrip('v').split('-')[0].split('+')[0]
+            return tuple(map(int, clean_version.split('.')))
+        
+        try:
+            current_tuple = parse_version(current)
+            new_tuple = parse_version(new)
+            return new_tuple > current_tuple
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"版本比较失败: current={current}, new={new}, error={e}")
+            return False
 
 logger = logging.getLogger(__name__)
 
