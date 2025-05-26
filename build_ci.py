@@ -23,8 +23,8 @@ def check_file_exists(filepath, description):
 
 def main():
     parser = argparse.ArgumentParser(description='Build GameTimeLimiter for CI')
-    parser.add_argument('--optimize', type=int, default=1, choices=[0, 1, 2],
-                       help='Optimization level (0=none, 1=basic, 2=advanced)')
+    parser.add_argument('--optimize', type=int, default=1, choices=[0, 1],
+                       help='Optimization level (0=none, 1=basic)')
     args = parser.parse_args()
     
     print(f"[CI BUILD] Starting build with optimization level {args.optimize}")
@@ -107,7 +107,7 @@ def main():
         print(f"[CI BUILD] Traceback: {traceback.format_exc()}")
         return 1
     
-    # Build command
+    # Build command with size optimization
     cmd = [
         sys.executable, '-m', 'PyInstaller',
         '--name=GameTimeLimiter',
@@ -124,17 +124,24 @@ def main():
         '--hidden-import=openai',
         '--hidden-import=psutil',
         '--hidden-import=pygetwindow',
-        '--collect-all=PyQt6',
+        # Remove --collect-all=PyQt6 to reduce size significantly
         '--noconfirm',
-        '--log-level=DEBUG',  # Add debug logging
+        '--log-level=WARN',  # Only show warnings and errors
         'main.py'
     ]
     
-    # Add optimization flags
+    # Add basic excludes to match local build
+    basic_excludes = [
+        'matplotlib.tests', 'numpy.testing', 'scipy', 'pandas', 
+        'tk', 'tkinter', 'PyQt5', 'PySide2', 'pytest'
+    ]
+    
+    for exclude in basic_excludes:
+        cmd.append(f'--exclude-module={exclude}')
+    
+    # Add optimization flags - keep it simple and consistent
     if args.optimize >= 1:
         cmd.extend(['--optimize', '1'])
-    if args.optimize >= 2:
-        cmd.extend(['--strip'])
     
     print(f"[CI BUILD] Running PyInstaller command:")
     print(f"[CI BUILD] {' '.join(cmd)}")
@@ -151,9 +158,37 @@ def main():
             universal_newlines=True
         )
         
-        # Print output in real-time
+        # Print output in real-time, filtering for important messages
+        build_stage = ""
         for line in process.stdout:
-            print(f"[PYINSTALLER] {line.rstrip()}")
+            line = line.rstrip()
+            
+            # Track build stages for progress indication
+            if 'analyzing' in line.lower():
+                if build_stage != "analyzing":
+                    print("[CI BUILD] 📊 Analyzing dependencies...")
+                    build_stage = "analyzing"
+            elif 'building pyz' in line.lower():
+                if build_stage != "pyz":
+                    print("[CI BUILD] 📦 Building Python archive...")
+                    build_stage = "pyz"
+            elif 'building exe' in line.lower():
+                if build_stage != "exe":
+                    print("[CI BUILD] 🔨 Building executable...")
+                    build_stage = "exe"
+            
+            # Only show important messages: errors, warnings, and key progress info
+            if any(keyword in line.lower() for keyword in [
+                'error', 'warning', 'failed', 'exception', 'traceback',
+                'module not found', 'missing module', 'cannot find'
+            ]):
+                print(f"[PYINSTALLER] ⚠️  {line}")
+            elif any(keyword in line.lower() for keyword in [
+                'building exe', 'building pyz', 'building pkg', 'building bootloader'
+            ]):
+                print(f"[PYINSTALLER] 🔧 {line}")
+            elif 'collecting' in line.lower() and ('pyqt' in line.lower() or 'qt' in line.lower()):
+                print(f"[PYINSTALLER] 📚 {line}")  # Show PyQt collection progress
         
         process.wait()
         
@@ -171,8 +206,18 @@ def main():
     # Verify the build
     exe_path = os.path.join('dist', 'GameTimeLimiter.exe')
     if os.path.exists(exe_path):
-        size_mb = os.path.getsize(exe_path) / (1024 * 1024)
-        print(f"[CI BUILD] ✓ SUCCESS: Built {exe_path} ({size_mb:.1f} MB)")
+        size_bytes = os.path.getsize(exe_path)
+        size_mb = size_bytes / (1024 * 1024)
+        print(f"[CI BUILD] ✓ SUCCESS: Built {exe_path}")
+        print(f"[CI BUILD] 📊 File size: {size_mb:.1f} MB ({size_bytes:,} bytes)")
+        
+        # Size comparison reference
+        if size_mb > 100:
+            print(f"[CI BUILD] ⚠️  Large file size detected. Consider:")
+            print(f"[CI BUILD]    - Using --optimize 2 for better compression")
+            print(f"[CI BUILD]    - Checking for unnecessary dependencies")
+        elif size_mb < 50:
+            print(f"[CI BUILD] ✅ Good file size - well optimized!")
         
         # List all files in dist
         print("[CI BUILD] Dist directory contents:")
@@ -180,7 +225,8 @@ def main():
             for file in files:
                 filepath = os.path.join(root, file)
                 size = os.path.getsize(filepath)
-                print(f"[CI BUILD]   {filepath}: {size} bytes")
+                size_mb_file = size / (1024 * 1024)
+                print(f"[CI BUILD]   {filepath}: {size_mb_file:.1f} MB ({size:,} bytes)")
         
         return 0
     else:
