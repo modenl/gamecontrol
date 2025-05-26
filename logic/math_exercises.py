@@ -39,10 +39,12 @@ class MathExercises:
         self.api_error = None
         # 初始化事件日志记录器
         self.event_logger = get_event_logger()
+        # 防止重复生成的标志
+        self._generating = False
         
     async def initialize(self):
         """Async initialization to be called after construction"""
-        await self.load_cached_questions()
+        # 不在初始化时加载题目，让get_daily_questions()来处理
         return self
         
     async def load_cached_questions(self):
@@ -159,6 +161,12 @@ class MathExercises:
         
     async def _generate_questions_async(self, force_regenerate=False):
         """异步生成题目"""
+        # 防止重复调用
+        if self._generating:
+            logger.warning("题目生成已在进行中，忽略重复调用")
+            return False
+            
+        self._generating = True
         try:
             # 直接生成新题目（数据库检查已在get_daily_questions中完成）
             logger.info("开始生成新题目")
@@ -472,6 +480,9 @@ Timestamp: {now_str}
             # 不使用备用题目，直接抛出错误让调用者处理
             self.api_error = f"生成题目时出错: {str(e)}"
             raise
+        finally:
+            # 重置生成标志
+            self._generating = False
     
     def get_current_question(self):
         """获取当前问题"""
@@ -842,6 +853,7 @@ IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensur
                         if q["is_correct"] is None:
                             self.current_index = i
                             break
+                    logger.info(f"成功从数据库加载{len(self.questions)}道题目")
                 else:
                     # 数据库中没有足够的题目，需要生成新题目
                     logger.info("数据库中没有足够题目，开始生成新题目")
