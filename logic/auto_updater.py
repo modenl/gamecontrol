@@ -556,10 +556,12 @@ class AutoUpdater(QObject):
             logger.info(f"💾 保存检查时间: {self.last_check_time}")
             
             if update_info:
-                logger.info(f"🎉 发现新版本: {update_info.version}")
+                logger.info(f"🎉 _async_check_for_updates发现新版本: {update_info.version}")
+                logger.info(f"📋 准备通过QTimer.singleShot调用on_update_available...")
                 # 在主线程中调用处理方法
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, lambda: self.on_update_available(update_info))
+                logger.info(f"✅ QTimer.singleShot已安排on_update_available调用")
             else:
                 logger.info("ℹ️ 当前版本是最新的")
                 # 在主线程中调用处理方法
@@ -574,20 +576,34 @@ class AutoUpdater(QObject):
     
     def on_update_available(self, update_info: UpdateInfo):
         """处理发现更新"""
-        logger.info(f"发现新版本: {update_info.version}")
+        logger.info(f"🎯 AutoUpdater.on_update_available 被调用!")
+        logger.info(f"   新版本: {update_info.version}")
+        logger.info(f"   当前parent: {self.parent}")
+        logger.info(f"   parent类型: {type(self.parent).__name__ if self.parent else 'None'}")
         
         # 首先发送信号通知主窗口
         logger.info("📡 发送update_available信号到主窗口...")
-        self.update_available.emit(update_info)
+        try:
+            # 检查信号连接状态
+            receivers = self.update_available.receivers()
+            logger.info(f"📊 update_available信号接收者数量: {receivers}")
+            
+            self.update_available.emit(update_info)
+            logger.info("✅ update_available信号已发送")
+        except Exception as e:
+            logger.error(f"❌ 发送update_available信号失败: {e}")
         
         # 检查是否可以更新
         can_update, reason = self.can_update_now()
+        logger.info(f"🔍 can_update_now结果: can_update={can_update}, reason='{reason}'")
+        
         if not can_update:
-            logger.info(f"当前无法更新: {reason}")
+            logger.info(f"⚠️ 当前无法更新: {reason}")
             # 可以选择稍后提醒用户
             return
         
         # 显示更新对话框
+        logger.info("📋 准备显示更新对话框...")
         self.show_update_dialog(update_info)
     
     def on_no_update_available(self):

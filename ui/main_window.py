@@ -405,23 +405,25 @@ class MainWindow(QMainWindow):
     
     def on_update_available(self, update_info):
         """处理发现更新的信号"""
-        logger.info(f"🎉 主窗口收到更新可用信号!")
+        logger.info(f"🎯 MainWindow.on_update_available 被调用!")
         logger.info(f"   新版本: {update_info.version}")
         logger.info(f"   文件名: {update_info.asset_name}")
         logger.info(f"   文件大小: {update_info.asset_size:,} 字节")
         logger.info(f"   下载地址: {update_info.download_url}")
+        logger.info(f"   调用者: {self}")
+        logger.info(f"   auto_updater: {self.auto_updater}")
         
         try:
             # 恢复按钮状态
             self.restore_update_button()
             
             # 显示更新对话框
-            logger.info("📋 准备显示更新对话框...")
+            logger.info("📋 主窗口准备显示更新对话框...")
             self.auto_updater.show_update_dialog(update_info)
-            logger.info("✅ 更新对话框已显示")
+            logger.info("✅ 主窗口更新对话框已显示")
             
         except Exception as e:
-            logger.error(f"❌ 处理更新可用信号失败: {e}", exc_info=True)
+            logger.error(f"❌ 主窗口处理更新可用信号失败: {e}", exc_info=True)
     
     def on_update_check_failed(self, error_msg):
         """处理更新检查失败的信号"""
