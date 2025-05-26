@@ -296,9 +296,19 @@ class MainWindow(QMainWindow):
         
     def resume_monitoring(self):
         """恢复窗口监控"""
-        if hasattr(self, 'window_monitor') and not self.window_monitor.is_running:
-            logger.info("恢复窗口监控")
-            self._safe_start_monitoring()
+        try:
+            # 检查是否有活动会话，如果有则不启动监控
+            if self.session_active:
+                logger.info("检测到活动会话，不启动窗口监控")
+                return
+                
+            if hasattr(self, 'window_monitor') and not self.window_monitor.is_running:
+                logger.info("恢复窗口监控")
+                self._safe_start_monitoring()
+            else:
+                logger.info("窗口监控已在运行或不可用")
+        except Exception as e:
+            logger.error(f"恢复窗口监控时出错: {e}")
     
     # --- 自动更新相关方法 ---
     def startup_update_check(self):
@@ -453,6 +463,10 @@ class MainWindow(QMainWindow):
             self.countdown_window = None
         await self.update_weekly_status()
         self.update_session_display()
+        
+        # 重要：会话结束后重新启动窗口监控
+        logger.info("会话结束，重新启动窗口监控")
+        self._safe_start_monitoring()
 
     async def start_session_with_effect(self) -> None:
         """带视觉效果的开始会话"""
