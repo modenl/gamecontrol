@@ -6,7 +6,7 @@
 # MAJOR: 不兼容的API修改
 # MINOR: 向下兼容的功能性新增
 # PATCH: 向下兼容的问题修正
-__version__ = "1.0.4"
+__version__ = "1.0.2"
 
 # 版本信息
 VERSION_INFO = {
