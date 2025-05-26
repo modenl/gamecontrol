@@ -15,8 +15,11 @@ jobs:
   build-windows:
     runs-on: windows-latest
     permissions:
-      contents: write  # Required for creating releases
-      actions: read    # Required for downloading artifacts
+      contents: write      # Required for creating releases and uploading assets
+      actions: read        # Required for downloading artifacts
+      packages: read       # Required for package operations
+      pull-requests: read  # Required for PR operations
+      issues: read         # Required for issue operations
     
     steps:
     - name: Checkout code
@@ -168,6 +171,15 @@ jobs:
           README.md
           LICENSE
           
+    - name: Debug GitHub Token and Permissions
+      run: |
+        echo "Event name: ${{ github.event_name }}"
+        echo "Ref: ${{ github.ref }}"
+        echo "Ref name: ${{ github.ref_name }}"
+        echo "Repository: ${{ github.repository }}"
+        echo "Actor: ${{ github.actor }}"
+        echo "Token length: ${{ length(secrets.GITHUB_TOKEN) }}"
+          
     - name: Create Release
       if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
@@ -177,6 +189,8 @@ jobs:
         body_path: release_notes.md
         draft: false
         prerelease: false
+        generate_release_notes: false
+        make_latest: true
         files: |
           dist/GameTimeLimiter.exe
           .env.example
@@ -192,6 +206,8 @@ jobs:
         body_path: release_notes.md
         draft: true  # Manual releases start as draft
         prerelease: false
+        generate_release_notes: false
+        make_latest: false
         files: |
           dist/GameTimeLimiter.exe
           .env.example
