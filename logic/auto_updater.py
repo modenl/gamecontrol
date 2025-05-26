@@ -108,16 +108,51 @@ class UpdateChecker(QObject):
             import concurrent.futures
             
             def sync_request():
-                """同步HTTP请求"""
-                logger.info("🌐 请求GitHub API...")
-                response = requests.get(
-                    f"{GITHUB_RELEASES_URL}/latest",
-                    timeout=30,
-                    headers={'User-Agent': 'GameTimeLimiter-AutoUpdater/1.0'}
-                )
-                logger.info(f"📡 API响应状态: {response.status_code}")
-                response.raise_for_status()
-                return response.json()
+                """同步HTTP请求，带重试机制"""
+                import time
+                max_retries = 3
+                retry_delay = 2  # 秒
+                
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"🌐 请求GitHub API... (尝试 {attempt + 1}/{max_retries})")
+                        response = requests.get(
+                            f"{GITHUB_RELEASES_URL}/latest",
+                            timeout=30,
+                            headers={'User-Agent': 'GameTimeLimiter-AutoUpdater/1.0'}
+                        )
+                        logger.info(f"📡 API响应状态: {response.status_code}")
+                        
+                        # 检查是否是临时错误（5xx）
+                        if response.status_code >= 500:
+                            if attempt < max_retries - 1:
+                                logger.warning(f"⚠️ 服务器错误 {response.status_code}，{retry_delay}秒后重试...")
+                                time.sleep(retry_delay)
+                                retry_delay *= 2  # 指数退避
+                                continue
+                        
+                        response.raise_for_status()
+                        return response.json()
+                        
+                    except requests.exceptions.Timeout as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️ 请求超时，{retry_delay}秒后重试...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        else:
+                            raise e
+                    except requests.exceptions.ConnectionError as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️ 连接错误，{retry_delay}秒后重试...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        else:
+                            raise e
+                
+                # 如果所有重试都失败了，抛出最后一个异常
+                raise Exception("所有重试尝试都失败了")
             
             # 在线程池中运行同步请求
             loop = asyncio.get_event_loop()
@@ -172,17 +207,30 @@ class UpdateChecker(QObject):
             
             return update_info
             
+        except requests.exceptions.Timeout as e:
+            error_msg = "网络连接超时，请检查网络连接后重试"
+            logger.error(f"请求超时: {e}")
+            raise Exception(error_msg)
+        except requests.exceptions.ConnectionError as e:
+            error_msg = "无法连接到GitHub服务器，请检查网络连接"
+            logger.error(f"连接错误: {e}")
+            raise Exception(error_msg)
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                error_msg = "未找到更新信息，可能仓库配置有误"
+            elif e.response.status_code >= 500:
+                error_msg = "GitHub服务器暂时不可用，请稍后重试"
+            else:
+                error_msg = f"服务器返回错误: {e.response.status_code}"
+            logger.error(f"HTTP错误: {e}")
+            raise Exception(error_msg)
         except requests.RequestException as e:
             error_msg = f"网络请求失败: {e}"
             logger.error(error_msg)
             raise Exception(error_msg)
-        except requests.HTTPError as e:
-            error_msg = f"HTTP错误: {e}"
-            logger.error(error_msg)
-            raise Exception(error_msg)
         except json.JSONDecodeError as e:
-            error_msg = f"解析响应数据失败: {e}"
-            logger.error(error_msg)
+            error_msg = "服务器返回的数据格式错误"
+            logger.error(f"JSON解析失败: {e}")
             raise Exception(error_msg)
         except Exception as e:
             error_msg = f"检查更新失败: {e}"

@@ -433,11 +433,22 @@ class MainWindow(QMainWindow):
             # 如果是手动检查，显示错误信息
             if hasattr(self, 'update_button') and not self.update_button.isEnabled():
                 logger.info("📋 显示更新检查失败对话框")
-                QMessageBox.information(
-                    self,
-                    "检查更新",
-                    f"检查更新失败：{error_msg}\n\n请检查网络连接后重试。"
-                )
+                
+                # 根据错误类型显示不同的提示
+                if "超时" in error_msg or "timeout" in error_msg.lower():
+                    title = "网络超时"
+                    message = f"检查更新时网络连接超时。\n\n{error_msg}\n\n建议：\n• 检查网络连接是否正常\n• 稍后重试\n• 如果问题持续，可能是GitHub服务器暂时不可用"
+                elif "连接" in error_msg or "connection" in error_msg.lower():
+                    title = "网络连接问题"
+                    message = f"无法连接到更新服务器。\n\n{error_msg}\n\n建议：\n• 检查网络连接\n• 检查防火墙设置\n• 确认可以访问GitHub"
+                elif "服务器" in error_msg or "server" in error_msg.lower():
+                    title = "服务器问题"
+                    message = f"更新服务器暂时不可用。\n\n{error_msg}\n\n建议：\n• 稍后重试\n• GitHub服务器可能正在维护"
+                else:
+                    title = "检查更新失败"
+                    message = f"检查更新时发生错误：\n\n{error_msg}\n\n请检查网络连接后重试。"
+                
+                QMessageBox.information(self, title, message)
             else:
                 logger.info("ℹ️ 自动更新检查失败，不显示对话框")
                 
