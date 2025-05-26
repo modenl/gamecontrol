@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Pre-commit hook to enforce AI Development Guidelines
+
+echo "🔍 Checking AI Development Guidelines compliance..."
+
+# Define forbidden file patterns
+FORBIDDEN_PATTERNS=(
+    "test_fix_*.py"
+    "test_debug_*.py"
+    "temp_test_*.py"
+    "test_temp_*.py"
+    "fix_*.py"
+    "cleanup_*.py"
+    "repair_*.py"
+    "patch_*.py"
+    "debug_*.py"
+    "check_*.py"
+    "diagnose_*.py"
+    "*_FIX.md"
+    "*_SOLUTION.md"
+    "TEMP_*.md"
+    "DEBUG_*.md"
+)
+
+# Check staged files
+STAGED_FILES=$(git diff --cached --name-only)
+
+VIOLATIONS_FOUND=false
+
+for file in $STAGED_FILES; do
+    filename=$(basename "$file")
+    
+    for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+        if [[ $filename == $pattern ]]; then
+            echo "❌ VIOLATION: File '$file' violates AI Development Guidelines"
+            echo "   Pattern '$pattern' is forbidden"
+            echo "   See AI_DEVELOPMENT_GUIDELINES.md for alternatives"
+            VIOLATIONS_FOUND=true
+        fi
+    done
+done
+
+if [ "$VIOLATIONS_FOUND" = true ]; then
+    echo ""
+    echo "🚫 Commit blocked due to AI Development Guidelines violations!"
+    echo ""
+    echo "📋 Alternatives:"
+    echo "   • Instead of test_fix_*.py → Add to existing test files"
+    echo "   • Instead of fix_*.py → Add self-repair logic to core modules"
+    echo "   • Instead of *_FIX.md → Update README.md or existing docs"
+    echo ""
+    echo "📖 Read AI_DEVELOPMENT_GUIDELINES.md for complete rules"
+    exit 1
+fi
+
+echo "✅ All files comply with AI Development Guidelines"
+exit 0 

@@ -420,19 +420,51 @@ class AutoUpdater(QObject):
                 return
             
             logger.info("📝 创建更新检查任务...")
-            # 直接使用 asyncio.create_task 而不是 TaskManager
-            # 因为 TaskManager 在 qasync 环境中有兼容性问题
+            # 使用 QTimer 延迟执行，避免事件循环问题
             try:
-                loop = asyncio.get_event_loop()
-                self._check_task = asyncio.create_task(self._async_check_for_updates())
-                self._check_task_id = "update_check"
-                logger.info(f"✅ 直接创建更新检查任务: {self._check_task_id}")
+                from PyQt6.QtCore import QTimer
+                # 延迟100ms执行，确保事件循环已准备好
+                QTimer.singleShot(100, lambda: self._create_check_task())
+                logger.info("✅ 已安排更新检查任务")
             except Exception as e:
-                logger.error(f"❌ 创建更新检查任务失败: {e}")
+                logger.error(f"❌ 安排更新检查任务失败: {e}")
                 self._handle_check_error(e)
-            logger.info(f"✅ 更新检查任务已创建: {self._check_task_id}")
         else:
             logger.info("ℹ️ 不需要检查更新（时间间隔未到）")
+    
+    def _create_check_task(self):
+        """创建检查任务的辅助方法"""
+        try:
+            # 直接在线程中运行，避免qasync冲突
+            import threading
+            import concurrent.futures
+            
+            def run_check():
+                """在线程中运行检查"""
+                try:
+                    # 创建新的事件循环
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    # 运行检查
+                    result = loop.run_until_complete(self._async_check_for_updates())
+                    loop.close()
+                    
+                except Exception as e:
+                    logger.error(f"线程中检查更新失败: {e}")
+                    # 在主线程中发送错误信号
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self.update_check_failed.emit(str(e)))
+            
+            # 在后台线程中运行
+            thread = threading.Thread(target=run_check, daemon=True)
+            thread.start()
+            
+            self._check_task_id = "update_check"
+            logger.info(f"✅ 更新检查任务已创建: {self._check_task_id}")
+        except Exception as e:
+            logger.error(f"❌ 创建更新检查任务失败: {e}")
+            self._handle_check_error(e)
     
     def _handle_check_error(self, error):
         """处理检查错误"""
@@ -457,18 +489,18 @@ class AutoUpdater(QObject):
             
             if update_info:
                 logger.info(f"🎉 发现新版本: {update_info.version}")
-                # 使用 QTimer.singleShot 在主线程中发送信号
+                # 在主线程中发送信号
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, lambda: self.update_available.emit(update_info))
             else:
                 logger.info("ℹ️ 当前版本是最新的")
-                # 使用 QTimer.singleShot 在主线程中发送信号
+                # 在主线程中发送信号
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, lambda: self.no_update_available.emit())
                 
         except Exception as e:
             logger.error(f"❌ 异步检查更新失败: {e}", exc_info=True)
-            # 使用 QTimer.singleShot 在主线程中发送信号
+            # 在主线程中发送信号
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, lambda: self.update_check_failed.emit(str(e)))
     
@@ -595,14 +627,36 @@ class AutoUpdater(QObject):
             # 处理取消按钮
             progress_dialog.canceled.connect(self._cancel_download)
             
-            # 直接使用 asyncio.create_task 开始下载
+            # 直接在线程中运行下载，避免qasync冲突
             try:
-                loop = asyncio.get_event_loop()
-                self._download_task = asyncio.create_task(self._start_download_task(update_info))
+                import threading
+                
+                def run_download():
+                    """在线程中运行下载"""
+                    try:
+                        # 创建新的事件循环
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        # 运行下载
+                        result = loop.run_until_complete(self._start_download_task(update_info))
+                        loop.close()
+                        
+                    except Exception as e:
+                        logger.error(f"线程中下载失败: {e}")
+                        # 在主线程中发送错误信号
+                        from PyQt6.QtCore import QTimer
+                        QTimer.singleShot(0, lambda: self.downloader.download_failed.emit(str(e)))
+                
+                # 在后台线程中运行
+                thread = threading.Thread(target=run_download, daemon=True)
+                thread.start()
+                
                 self._download_task_id = "update_download"
-                logger.info(f"✅ 直接创建下载任务: {self._download_task_id}")
+                logger.info(f"✅ 下载任务已创建: {self._download_task_id}")
             except Exception as e:
                 logger.error(f"❌ 创建下载任务失败: {e}")
+                progress_dialog.close()
                 QMessageBox.critical(
                     self.parent,
                     "下载失败",
@@ -624,22 +678,22 @@ class AutoUpdater(QObject):
             download_path = await self.downloader.download_update(update_info)
             logger.info(f"✅ 下载完成: {download_path}")
             
-            # 使用 QTimer.singleShot 在主线程中发送信号
+            # 在主线程中发送信号
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, lambda: self.downloader.download_completed.emit(download_path))
             
         except Exception as e:
             logger.error(f"❌ 下载任务失败: {e}")
-            # 使用 QTimer.singleShot 在主线程中发送信号
+            # 在主线程中发送信号
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, lambda: self.downloader.download_failed.emit(str(e)))
     
     def _cancel_download(self):
         """取消下载"""
+        logger.info("用户请求取消下载")
         self.downloader.cancel_download()
-        if self._download_task and not self._download_task.done():
-            self._download_task.cancel()
-            logger.info("下载任务已取消")
+        # 注意：使用 TaskManager 时，任务取消由 TaskManager 内部处理
+        logger.info("下载取消请求已发送")
     
     def update_download_progress(self, progress_dialog, downloaded, total):
         """更新下载进度"""

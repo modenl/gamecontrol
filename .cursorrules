@@ -1,0 +1,79 @@
+# Cursor AI Development Rules for GameControl Project
+
+## 🚫 STRICTLY FORBIDDEN - DO NOT CREATE THESE FILES:
+
+### Temporary Test Files
+- ❌ test_fix_*.py
+- ❌ test_debug_*.py  
+- ❌ temp_test_*.py
+- ❌ test_temp_*.py
+
+### One-time Fix Scripts
+- ❌ fix_*.py
+- ❌ cleanup_*.py
+- ❌ repair_*.py
+- ❌ patch_*.py
+- ❌ migrate_*.py (unless permanent DB migration)
+
+### Temporary Documentation
+- ❌ *_FIX.md
+- ❌ *_SOLUTION.md
+- ❌ *_IMPLEMENTATION.md (unless permanent architecture)
+- ❌ TEMP_*.md
+- ❌ DEBUG_*.md
+
+### Debug Tools
+- ❌ debug_*.py
+- ❌ check_*.py (unless permanent health check)
+- ❌ diagnose_*.py
+
+## ✅ ALLOWED - CREATE THESE INSTEAD:
+
+### Repeatable Integration Tests
+- ✅ test_integration_*.py (must be repeatable)
+- ✅ Must include setup/teardown
+- ✅ Must be idempotent (same result on multiple runs)
+
+### Permanent Features
+- ✅ Core functionality modules
+- ✅ UI components
+- ✅ Configuration files
+- ✅ Permanent documentation updates
+
+## 🔄 ALTERNATIVES TO FORBIDDEN PATTERNS:
+
+Instead of temporary test files:
+- Add test methods to existing test files
+- Create permanent integration tests
+
+Instead of fix scripts:
+- Add self-repair logic to core modules
+- Implement permanent error handling
+
+Instead of temporary docs:
+- Update README.md with troubleshooting sections
+- Add to existing documentation
+
+## 📋 BEFORE CREATING ANY FILE, ASK:
+
+1. Can this file be run multiple times with consistent results?
+2. Does this solve a permanent need?
+3. Can this be achieved by modifying existing files?
+4. Does the filename follow naming conventions?
+5. Is this a temporary solution or permanent feature?
+
+## 🎯 MANDATORY CHECKS:
+
+- Every test must be repeatable
+- Every file must serve a permanent purpose
+- Prefer extending existing files over creating new ones
+- All code must include proper error handling and logging
+
+## 📞 IF RULE VIOLATION OCCURS:
+
+1. STOP immediately
+2. EXPLAIN why the file violates rules
+3. PROVIDE compliant alternative
+4. UPDATE existing files instead
+
+Remember: Every file added should be a permanent part of the project, not a temporary solution. 
