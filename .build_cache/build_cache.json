@@ -1,11 +1,11 @@
 {
   "file_hashes": {
     "main.py": "80932d3e2a28067a1740c572991f6714",
-    "version.py": "bffcdcdb26948ac9a21f5f389aef5ffe",
+    "version.py": "76e211c200fcb8f6e70fcde41ad46f3c",
     "requirements.txt": "90e52d0129535a61e8b89ae6ebd12c93",
     "app.ico": "33e107834f4bf26fe5bb8a79855cbad6",
-    "logic": "06f31dd753aca635db898b03166c8efb",
-    "ui": "66312c2df0eaf8cd490367ffa7c4b44c"
+    "logic": "22072cdb6cc410314368c7a9f85f35cc",
+    "ui": "90a0c495756511f7352edfadd7229be9"
   },
-  "last_build_time": 1748242677.1113293
+  "last_build_time": 1748244323.0764124
 }

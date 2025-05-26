@@ -795,15 +795,17 @@ class AutoUpdater(QObject):
             download_path = await self.downloader.download_update(update_info)
             logger.info(f"✅ 下载完成: {download_path}")
             
-            # 在主线程中发送信号
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self.downloader.download_completed.emit(download_path))
+            # 直接发送信号，Qt会自动处理线程安全
+            logger.info(f"📡 发送download_completed信号: {download_path}")
+            self.downloader.download_completed.emit(download_path)
+            logger.info(f"✅ download_completed信号已发送")
             
         except Exception as e:
             logger.error(f"❌ 下载任务失败: {e}")
-            # 在主线程中发送信号
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self.downloader.download_failed.emit(str(e)))
+            # 直接发送信号，Qt会自动处理线程安全
+            logger.info(f"📡 发送download_failed信号: {str(e)}")
+            self.downloader.download_failed.emit(str(e))
+            logger.info(f"✅ download_failed信号已发送")
     
     def _cancel_download(self):
         """取消下载"""
@@ -832,16 +834,30 @@ class AutoUpdater(QObject):
     
     def on_download_completed(self, progress_dialog, download_path):
         """下载完成处理"""
-        progress_dialog.close()
+        logger.info(f"🎯 on_download_completed被调用!")
+        logger.info(f"   下载路径: {download_path}")
+        logger.info(f"   进度对话框: {progress_dialog}")
         
         try:
-            logger.info(f"下载完成: {download_path}")
+            logger.info("🔄 关闭进度对话框...")
+            progress_dialog.close()
+            logger.info("✅ 进度对话框已关闭")
             
+            logger.info(f"📁 验证下载文件是否存在: {download_path}")
+            if os.path.exists(download_path):
+                file_size = os.path.getsize(download_path)
+                logger.info(f"✅ 下载文件存在，大小: {file_size:,} 字节")
+            else:
+                logger.error(f"❌ 下载文件不存在: {download_path}")
+                raise Exception(f"下载文件不存在: {download_path}")
+            
+            logger.info("🚀 准备调用install_update...")
             # 安装更新
             self.install_update(download_path)
+            logger.info("✅ install_update调用完成")
             
         except Exception as e:
-            logger.error(f"安装更新失败: {e}")
+            logger.error(f"❌ on_download_completed处理失败: {e}", exc_info=True)
             QMessageBox.critical(
                 self.parent,
                 "更新失败",
