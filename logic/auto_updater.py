@@ -1198,8 +1198,8 @@ if /i "{update_file_ext}"==".zip" (
     set "TEMP_EXTRACT_DIR=%TEMP%\\gamecontrol_extract_%RANDOM%"
     mkdir "%TEMP_EXTRACT_DIR%"
     
-    REM Use PowerShell to extract ZIP file to temp directory first
-    powershell -command "try {{ Expand-Archive -Path '{update_file}' -DestinationPath '%TEMP_EXTRACT_DIR%' -Force; Write-Host 'Extraction completed successfully' }} catch {{ Write-Host 'Extraction failed:' $_.Exception.Message; exit 1 }}"
+    REM Use tar command (available in Windows 10+) to extract ZIP file
+    tar -xf "{update_file}" -C "%TEMP_EXTRACT_DIR%"
     if errorlevel 1 (
         echo Failed to extract update ZIP file
         if exist "{backup_path}" (
@@ -1309,8 +1309,8 @@ echo Working directory: {current_dir}
 cd /d "{current_dir}"
 echo Current directory after cd: %CD%
 
-REM Clear ALL PyInstaller environment variables that could interfere
-echo Clearing PyInstaller environment variables...
+REM Clear ALL PyInstaller and PowerShell environment variables that could interfere
+echo Clearing PyInstaller and PowerShell environment variables...
 set "_MEIPASS="
 set "_MEIPASS2="
 set "_PYI_APPLICATION_HOME_DIR="
@@ -1319,6 +1319,12 @@ set "_PYI_PARENT_PROCESS_LEVEL="
 set "PYINSTALLER_RUNTIME_TMPDIR="
 set "QML2_IMPORT_PATH="
 set "QT_PLUGIN_PATH="
+set "PYTHONPATH="
+set "PYTHONHOME="
+set "VIRTUAL_ENV="
+set "CONDA_DEFAULT_ENV="
+set "PSModulePath="
+set "POWERSHELL_DISTRIBUTION_CHANNEL="
 
 REM Clean the PATH variable to remove PyInstaller temp directories
 echo Cleaning PATH variable...
@@ -1335,9 +1341,9 @@ for %%i in ("%PATH:;=" "%") do (
 )
 set "PATH=%CLEAN_PATH%"
 
-REM Use start command with clean environment to launch the application
+REM Use start command with /B flag to launch in background with clean environment
 echo Starting application with clean environment...
-start "" "{current_exe}"
+start /B /D "{current_dir}" "" "{current_exe}"
 
 REM Wait briefly for the application to start
 timeout /t 2 /nobreak >nul
