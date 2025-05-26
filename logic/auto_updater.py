@@ -681,54 +681,103 @@ class AutoUpdater(QObject):
             update_file_path: 更新文件路径
         """
         try:
-            logger.info("开始安装更新...")
+            logger.info("🚀 开始安装更新...")
+            logger.info(f"📁 更新文件路径: {update_file_path}")
+            
+            # 检查更新文件是否存在
+            if not os.path.exists(update_file_path):
+                raise Exception(f"更新文件不存在: {update_file_path}")
+            
+            # 获取文件大小
+            file_size = os.path.getsize(update_file_path)
+            logger.info(f"📏 更新文件大小: {file_size:,} 字节")
             
             # 获取当前可执行文件路径
             if hasattr(sys, 'frozen'):
                 current_exe = sys.executable
+                logger.info("🔧 运行环境: 打包后的可执行文件")
             else:
                 current_exe = os.path.abspath(sys.argv[0])
+                logger.info("🔧 运行环境: Python脚本")
             
+            logger.info(f"📍 当前可执行文件: {current_exe}")
             current_dir = os.path.dirname(current_exe)
+            logger.info(f"📂 当前目录: {current_dir}")
+            
+            # 检查当前可执行文件是否存在
+            if not os.path.exists(current_exe):
+                logger.warning(f"⚠️ 当前可执行文件不存在: {current_exe}")
             
             # 备份当前版本（如果启用）
             backup_path = None
             if UPDATE_BACKUP_ENABLED:
+                logger.info("💾 开始创建备份...")
                 backup_path = self.create_backup(current_exe)
-                logger.info(f"已备份当前版本到: {backup_path}")
+                logger.info(f"✅ 已备份当前版本到: {backup_path}")
+            else:
+                logger.info("⚠️ 备份功能已禁用")
             
             # 创建更新脚本
+            logger.info("📝 创建更新脚本...")
             update_script = self.create_update_script(
                 update_file_path, current_exe, current_dir, backup_path
             )
+            logger.info(f"✅ 更新脚本已创建: {update_script}")
             
-            # 显示最后确认
+            # 显示详细的确认信息
+            update_file_name = os.path.basename(update_file_path)
+            update_file_ext = os.path.splitext(update_file_path)[1].lower()
+            size_mb = file_size / (1024 * 1024)
+            
+            message = f"""更新文件已下载完成，准备安装：
+
+📁 文件名: {update_file_name}
+📏 文件大小: {size_mb:.1f} MB
+🔧 文件类型: {update_file_ext}
+📍 安装位置: {current_exe}
+💾 备份位置: {backup_path if backup_path else "无备份"}
+
+程序将重启以完成安装。
+
+确定要继续吗？"""
+            
             reply = QMessageBox.question(
                 self.parent,
                 "准备安装更新",
-                "更新文件已下载完成，程序将重启以完成安装。\n\n确定要继续吗？",
+                message,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
             )
             
             if reply == QMessageBox.StandardButton.Yes:
+                logger.info("👤 用户确认安装更新")
+                logger.info("🚀 执行更新脚本并退出程序...")
+                logger.info(f"📝 脚本路径: {update_script}")
+                
                 # 执行更新脚本并退出程序
-                logger.info("执行更新脚本并退出程序...")
-                subprocess.Popen([update_script], shell=True)
+                process = subprocess.Popen([update_script], shell=True)
+                logger.info(f"✅ 更新脚本已启动，进程ID: {process.pid}")
                 
                 # 发送更新安装信号
                 self.update_installed.emit()
                 
+                # 给脚本一点时间启动
+                import time
+                time.sleep(1)
+                
                 # 退出应用程序
+                logger.info("🔚 退出应用程序以完成更新...")
                 QApplication.quit()
+            else:
+                logger.info("❌ 用户取消安装更新")
             
         except Exception as e:
-            logger.error(f"安装更新失败: {e}")
+            logger.error(f"❌ 安装更新失败: {e}", exc_info=True)
             self.update_failed.emit(str(e))
             QMessageBox.critical(
                 self.parent,
                 "安装失败",
-                f"安装更新失败: {e}"
+                f"安装更新失败: {e}\n\n请检查日志文件获取详细信息。"
             )
     
     def create_backup(self, current_exe: str) -> str:
@@ -740,15 +789,55 @@ class AutoUpdater(QObject):
         Returns:
             str: 备份文件路径
         """
-        backup_dir = os.path.join(os.path.dirname(current_exe), "backup")
-        os.makedirs(backup_dir, exist_ok=True)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"GameTimeLimiter_v{__version__}_{timestamp}.exe"
-        backup_path = os.path.join(backup_dir, backup_name)
-        
-        shutil.copy2(current_exe, backup_path)
-        return backup_path
+        try:
+            backup_dir = os.path.join(os.path.dirname(current_exe), "backup")
+            os.makedirs(backup_dir, exist_ok=True)
+            logger.info(f"📂 备份目录: {backup_dir}")
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 根据当前文件类型确定备份文件名
+            if current_exe.endswith('.exe'):
+                backup_name = f"GameTimeLimiter_v{__version__}_{timestamp}.exe"
+            elif current_exe.endswith('.py'):
+                backup_name = f"main_v{__version__}_{timestamp}.py"
+            else:
+                # 保持原始扩展名
+                base_name = os.path.basename(current_exe)
+                name, ext = os.path.splitext(base_name)
+                backup_name = f"{name}_v{__version__}_{timestamp}{ext}"
+            
+            backup_path = os.path.join(backup_dir, backup_name)
+            logger.info(f"📝 备份文件名: {backup_name}")
+            
+            # 检查源文件是否存在
+            if not os.path.exists(current_exe):
+                raise Exception(f"源文件不存在: {current_exe}")
+            
+            # 获取源文件大小
+            source_size = os.path.getsize(current_exe)
+            logger.info(f"📏 源文件大小: {source_size:,} 字节")
+            
+            # 执行备份
+            shutil.copy2(current_exe, backup_path)
+            
+            # 验证备份文件
+            if os.path.exists(backup_path):
+                backup_size = os.path.getsize(backup_path)
+                logger.info(f"✅ 备份完成，备份文件大小: {backup_size:,} 字节")
+                
+                if backup_size != source_size:
+                    logger.warning(f"⚠️ 备份文件大小与源文件不匹配: {backup_size} != {source_size}")
+                else:
+                    logger.info("✅ 备份文件大小验证通过")
+            else:
+                raise Exception("备份文件创建失败")
+            
+            return backup_path
+            
+        except Exception as e:
+            logger.error(f"❌ 创建备份失败: {e}")
+            raise Exception(f"创建备份失败: {e}")
     
     def create_update_script(self, update_file: str, current_exe: str, 
                            current_dir: str, backup_path: Optional[str]) -> str:
@@ -765,23 +854,70 @@ class AutoUpdater(QObject):
         """
         script_path = os.path.join(tempfile.gettempdir(), "gamecontrol_update.bat")
         
+        # 获取更新文件的扩展名
+        update_file_ext = os.path.splitext(update_file)[1].lower()
+        
+        # 构建脚本内容
         script_content = f"""@echo off
 echo Starting GameTimeLimiter update process...
+echo Update file: {update_file}
+echo Target executable: {current_exe}
+echo Backup path: {backup_path if backup_path else "None"}
 
 REM Wait for main process to exit
-timeout /t 3 /nobreak >nul
+timeout /t 5 /nobreak >nul
 
-REM Check if update file is ZIP or EXE
-if /i "%~x1"==".zip" (
+REM Check if the main process is still running
+tasklist /FI "IMAGENAME eq GameTimeLimiter.exe" 2>NUL | find /I /N "GameTimeLimiter.exe">NUL
+if "%ERRORLEVEL%"=="0" (
+    echo Main process still running, waiting longer...
+    timeout /t 5 /nobreak >nul
+)
+
+REM Check if update file exists
+if not exist "{update_file}" (
+    echo Error: Update file not found: {update_file}
+    pause
+    exit /b 1
+)
+
+REM Check if update file is ZIP or EXE based on actual file extension
+if /i "{update_file_ext}"==".zip" (
     echo Extracting update from ZIP file...
-    powershell -command "Expand-Archive -Path '{update_file}' -DestinationPath '{current_dir}' -Force"
+    echo Extracting: {update_file}
+    echo To directory: {current_dir}
+    
+    REM Use PowerShell to extract ZIP file
+    powershell -command "try {{ Expand-Archive -Path '{update_file}' -DestinationPath '{current_dir}' -Force; Write-Host 'Extraction completed successfully' }} catch {{ Write-Host 'Extraction failed:' $_.Exception.Message; exit 1 }}"
     if errorlevel 1 (
-        echo Failed to extract update
+        echo Failed to extract update ZIP file
+        if exist "{backup_path}" (
+            echo Restoring backup...
+            copy /y "{backup_path}" "{current_exe}"
+        )
         pause
         exit /b 1
     )
+    
+    REM Look for the main executable in the extracted files
+    if exist "{current_dir}\\GameTimeLimiter.exe" (
+        echo Found extracted executable: GameTimeLimiter.exe
+    ) else (
+        echo Warning: GameTimeLimiter.exe not found in extracted files
+        dir "{current_dir}" /b
+    )
+    
 ) else (
     echo Installing update executable...
+    echo Copying: {update_file}
+    echo To: {current_exe}
+    
+    REM Backup current executable if backup path is provided
+    if exist "{backup_path}" (
+        echo Backup already created at: {backup_path}
+    )
+    
+    REM Copy the new executable
     copy /y "{update_file}" "{current_exe}"
     if errorlevel 1 (
         echo Failed to copy update file
@@ -792,16 +928,23 @@ if /i "%~x1"==".zip" (
         pause
         exit /b 1
     )
+    echo Executable updated successfully
 )
 
 REM Clean up temporary files
+echo Cleaning up temporary files...
 del /q "{update_file}" 2>nul
 
 echo Update completed successfully!
-echo Restarting application...
+echo Restarting application in 3 seconds...
+timeout /t 3 /nobreak >nul
 
 REM Start the updated application
+echo Starting: {current_exe}
 start "" "{current_exe}"
+
+REM Wait a moment before cleaning up script
+timeout /t 2 /nobreak >nul
 
 REM Clean up this script
 del /q "%~f0" 2>nul
@@ -809,6 +952,9 @@ del /q "%~f0" 2>nul
         
         with open(script_path, 'w', encoding='utf-8') as f:
             f.write(script_content)
+        
+        logger.info(f"更新脚本已创建: {script_path}")
+        logger.info(f"更新文件类型: {update_file_ext}")
         
         return script_path
     
