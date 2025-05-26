@@ -11,8 +11,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import httpx
+import requests
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QApplication
+
+# 注意：不再使用 TaskManager，直接使用 asyncio.create_task
+# from logic.task_manager import get_task_manager, run_task_safe
 
 # 导入版本信息
 try:
@@ -75,37 +79,56 @@ class UpdateChecker(QObject):
             UpdateInfo: 如果有更新可用，返回更新信息；否则返回None
         """
         try:
-            logger.info("开始检查更新...")
+            logger.info("🔍 UpdateChecker 开始检查更新...")
+            logger.info(f"📋 当前版本: {__version__}")
+            logger.info(f"🔗 GitHub API URL: {GITHUB_RELEASES_URL}/latest")
             
             # 创建HTTP客户端
             if not self.client:
-                self.client = httpx.AsyncClient(timeout=30.0)
+                logger.info("📡 创建HTTP客户端...")
+                self.client = httpx.AsyncClient(
+                    timeout=30.0,
+                    follow_redirects=True  # 自动跟随重定向
+                )
+                logger.info("✅ HTTP客户端创建成功")
             
             # 获取最新发布信息
+            logger.info("🌐 请求GitHub API...")
             response = await self.client.get(f"{GITHUB_RELEASES_URL}/latest")
+            logger.info(f"📡 API响应状态: {response.status_code}")
+            
             response.raise_for_status()
             
             release_data = response.json()
             latest_version = release_data["tag_name"].lstrip("v")  # 移除v前缀
             
-            logger.info(f"当前版本: {__version__}, 最新版本: {latest_version}")
+            logger.info(f"📋 当前版本: {__version__}")
+            logger.info(f"📋 最新版本: {latest_version}")
+            logger.info(f"📅 发布时间: {release_data['published_at']}")
+            logger.info(f"📦 资源数量: {len(release_data['assets'])}")
             
             # 检查是否有新版本
             if not is_newer_version(__version__, latest_version):
-                logger.info("当前已是最新版本")
+                logger.info("ℹ️ 当前已是最新版本")
                 return None
             
+            logger.info("🎉 发现新版本可用!")
+            
             # 查找Windows可执行文件
+            logger.info("🔍 查找Windows版本资源...")
             windows_asset = None
-            for asset in release_data["assets"]:
+            for i, asset in enumerate(release_data["assets"]):
                 asset_name = asset["name"].lower()
+                logger.info(f"   资源 {i+1}: {asset['name']} ({asset['size']:,} 字节)")
+                
                 if (asset_name.endswith(".exe") or 
                     asset_name.endswith(".zip") and "windows" in asset_name):
                     windows_asset = asset
+                    logger.info(f"✅ 找到Windows资源: {asset['name']}")
                     break
             
             if not windows_asset:
-                logger.warning("未找到Windows版本的下载文件")
+                logger.warning("⚠️ 未找到Windows版本的下载文件")
                 return None
             
             # 创建更新信息
@@ -118,7 +141,12 @@ class UpdateChecker(QObject):
                 asset_size=windows_asset["size"]
             )
             
-            logger.info(f"发现新版本: {update_info}")
+            logger.info(f"📦 更新信息创建成功:")
+            logger.info(f"   版本: {update_info.version}")
+            logger.info(f"   文件: {update_info.asset_name}")
+            logger.info(f"   大小: {update_info.asset_size:,} 字节")
+            logger.info(f"   URL: {update_info.download_url}")
+            
             return update_info
             
         except httpx.HTTPError as e:
@@ -158,6 +186,10 @@ class UpdateDownloader(QObject):
         """取消下载"""
         self.cancelled = True
     
+    def _emit_progress(self, downloaded, total):
+        """发送进度信号的辅助方法"""
+        self.download_progress.emit(downloaded, total)
+    
     async def download_update(self, update_info: UpdateInfo) -> str:
         """下载更新文件
         
@@ -174,32 +206,75 @@ class UpdateDownloader(QObject):
             temp_dir = tempfile.mkdtemp(prefix="gamecontrol_update_")
             download_path = os.path.join(temp_dir, update_info.asset_name)
             
-            # 创建HTTP客户端
-            if not self.client:
-                self.client = httpx.AsyncClient(timeout=UPDATE_DOWNLOAD_TIMEOUT)
+            # 使用requests进行下载，它对重定向处理更好
+            logger.info("使用requests库进行下载以更好地处理重定向...")
             
-            # 开始下载
-            async with self.client.stream("GET", update_info.download_url) as response:
-                response.raise_for_status()
+            # 在线程池中运行同步下载
+            import concurrent.futures
+            import threading
+            
+            def sync_download():
+                """同步下载函数"""
+                with requests.Session() as session:
+                    session.headers.update({
+                        'User-Agent': 'GameTimeLimiter-AutoUpdater/1.0'
+                    })
+                    
+                    # 开始下载
+                    response = session.get(
+                        update_info.download_url, 
+                        stream=True,
+                        timeout=UPDATE_DOWNLOAD_TIMEOUT,
+                        allow_redirects=True
+                    )
+                    response.raise_for_status()
+                    
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded_size = 0
+                    
+                    with open(download_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if self.cancelled:
+                                logger.info("下载被用户取消")
+                                raise Exception("下载被用户取消")
+                            
+                            if chunk:  # 过滤掉保持连接的chunk
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                
+                                # 发送进度信号（使用简单的方式）
+                                # 由于在线程中，我们需要使用QTimer来在主线程中发送信号
+                                from PyQt6.QtCore import QTimer
+                                QTimer.singleShot(0, lambda: self.download_progress.emit(downloaded_size, total_size))
+                    
+                    return download_path
+            
+            # 在线程池中运行下载
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                download_path = await loop.run_in_executor(executor, sync_download)
+            
+            logger.info(f"下载完成: {download_path}")
+            return download_path
                 
-                total_size = int(response.headers.get("content-length", 0))
-                downloaded_size = 0
-                
-                with open(download_path, "wb") as f:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        if self.cancelled:
-                            logger.info("下载被用户取消")
-                            raise Exception("下载被用户取消")
-                        
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        
-                        # 发送进度信号
-                        self.download_progress.emit(downloaded_size, total_size)
-                
-                logger.info(f"下载完成: {download_path}")
-                return download_path
-                
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 302:
+                error_msg = f"重定向错误 (302): 可能是网络或权限问题。请稍后重试。"
+                logger.error(f"HTTP 302 重定向错误: {e}")
+                logger.error(f"请求URL: {e.request.url}")
+                if hasattr(e.response, 'headers') and 'location' in e.response.headers:
+                    logger.error(f"重定向到: {e.response.headers['location']}")
+            else:
+                error_msg = f"HTTP错误 {e.response.status_code}: {e}"
+                logger.error(error_msg)
+            
+            # 清理临时文件
+            if 'download_path' in locals() and os.path.exists(download_path):
+                try:
+                    os.remove(download_path)
+                except:
+                    pass
+            raise Exception(error_msg)
         except Exception as e:
             error_msg = f"下载失败: {e}"
             logger.error(error_msg)
@@ -232,22 +307,29 @@ class AutoUpdater(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
+        
+        # 创建组件
         self.checker = UpdateChecker()
         self.downloader = UpdateDownloader()
-        self.check_timer = QTimer()
-        self.last_check_time = None
         
         # 连接信号
         self.checker.update_available.connect(self.on_update_available)
         self.checker.no_update_available.connect(self.on_no_update_available)
         self.checker.check_failed.connect(self.on_check_failed)
         
-        # 设置定时检查
-        self.check_timer.timeout.connect(self.check_for_updates_if_needed)
-        self.check_timer.start(60000)  # 每分钟检查一次是否需要检查更新
+        # 任务管理 - 直接使用 asyncio.Task 而不是 TaskManager
+        self._check_task = None
+        self._check_task_id = None
+        self._download_task = None
+        self._download_task_id = None
         
         # 加载上次检查时间
-        self.load_last_check_time()
+        self.last_check_time = self.load_last_check_time()
+        
+        # 设置定时检查
+        self.check_timer = QTimer()
+        self.check_timer.timeout.connect(self.check_for_updates_if_needed)
+        self.check_timer.start(60 * 60 * 1000)  # 每小时检查一次
     
     def load_last_check_time(self):
         """加载上次检查时间"""
@@ -313,29 +395,73 @@ class AutoUpdater(QObject):
         Args:
             manual: 是否为手动检查
         """
-        if manual or self.should_check_for_updates():
-            logger.info("开始检查更新...")
+        logger.info(f"🔍 检查更新请求: manual={manual}")
+        
+        # 检查是否需要更新
+        should_check = manual or self.should_check_for_updates()
+        logger.info(f"📋 是否需要检查: {should_check}")
+        
+        if should_check:
+            logger.info("🚀 开始检查更新...")
             self.update_check_started.emit()
             
-            # 在事件循环中运行异步检查
-            asyncio.create_task(self._async_check_for_updates())
+            # 检查是否已有检查任务在运行
+            if self._check_task and not self._check_task.done():
+                logger.warning("⚠️ 更新检查任务已在运行中，跳过此次请求")
+                return
+            
+            logger.info("📝 创建更新检查任务...")
+            # 直接使用 asyncio.create_task 而不是 TaskManager
+            # 因为 TaskManager 在 qasync 环境中有兼容性问题
+            try:
+                loop = asyncio.get_event_loop()
+                self._check_task = asyncio.create_task(self._async_check_for_updates())
+                self._check_task_id = "update_check"
+                logger.info(f"✅ 直接创建更新检查任务: {self._check_task_id}")
+            except Exception as e:
+                logger.error(f"❌ 创建更新检查任务失败: {e}")
+                self._handle_check_error(e)
+            logger.info(f"✅ 更新检查任务已创建: {self._check_task_id}")
+        else:
+            logger.info("ℹ️ 不需要检查更新（时间间隔未到）")
+    
+    def _handle_check_error(self, error):
+        """处理检查错误"""
+        logger.error(f"❌ 更新检查任务失败: {error}")
+        self.update_check_failed.emit(str(error))
     
     async def _async_check_for_updates(self):
         """异步检查更新"""
         try:
+            logger.info("🌐 开始异步检查更新...")
+            
+            # 检查网络连接
+            logger.info("📡 检查网络连接...")
+            
             update_info = await self.checker.check_for_updates()
+            logger.info("✅ 更新检查完成")
             
             # 保存检查时间
             self.last_check_time = datetime.now()
             self.save_last_check_time()
+            logger.info(f"💾 保存检查时间: {self.last_check_time}")
             
             if update_info:
-                self.update_available.emit(update_info)
+                logger.info(f"🎉 发现新版本: {update_info.version}")
+                # 使用 QTimer.singleShot 在主线程中发送信号
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.update_available.emit(update_info))
             else:
-                self.no_update_available.emit()
+                logger.info("ℹ️ 当前版本是最新的")
+                # 使用 QTimer.singleShot 在主线程中发送信号
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.no_update_available.emit())
                 
         except Exception as e:
-            self.update_check_failed.emit(str(e))
+            logger.error(f"❌ 异步检查更新失败: {e}", exc_info=True)
+            # 使用 QTimer.singleShot 在主线程中发送信号
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.update_check_failed.emit(str(e)))
     
     def on_update_available(self, update_info: UpdateInfo):
         """处理发现更新"""
@@ -363,9 +489,14 @@ class AutoUpdater(QObject):
     def show_update_dialog(self, update_info: UpdateInfo):
         """显示更新对话框"""
         try:
+            logger.info("📋 开始显示更新对话框...")
+            logger.info(f"   版本: {update_info.version}")
+            logger.info(f"   文件: {update_info.asset_name}")
+            
             # 格式化文件大小
             size_mb = update_info.asset_size / (1024 * 1024)
             size_text = f"{size_mb:.1f} MB"
+            logger.info(f"   大小: {size_text}")
             
             # 格式化发布时间
             try:
@@ -373,6 +504,7 @@ class AutoUpdater(QObject):
                 date_text = pub_date.strftime("%Y-%m-%d")
             except:
                 date_text = "未知"
+            logger.info(f"   发布日期: {date_text}")
             
             # 构建消息文本
             message = f"""
@@ -390,6 +522,8 @@ class AutoUpdater(QObject):
 注意：更新过程中程序将会重启。
             """.strip()
             
+            logger.info("💬 显示更新确认对话框...")
+            
             # 显示确认对话框
             reply = QMessageBox.question(
                 self.parent,
@@ -399,16 +533,34 @@ class AutoUpdater(QObject):
                 QMessageBox.StandardButton.Yes
             )
             
+            logger.info(f"👤 用户选择: {'Yes' if reply == QMessageBox.StandardButton.Yes else 'No'}")
+            
             if reply == QMessageBox.StandardButton.Yes:
+                logger.info("🚀 用户确认更新，开始更新过程...")
                 self.start_update_process(update_info)
+            else:
+                logger.info("❌ 用户取消更新")
                 
         except Exception as e:
-            logger.error(f"显示更新对话框失败: {e}")
+            logger.error(f"❌ 显示更新对话框失败: {e}", exc_info=True)
     
     def start_update_process(self, update_info: UpdateInfo):
         """开始更新过程"""
         try:
-            logger.info("开始更新过程...")
+            logger.info("🚀 开始更新过程...")
+            logger.info(f"📦 准备下载: {update_info.asset_name}")
+            logger.info(f"📏 文件大小: {update_info.asset_size:,} 字节")
+            logger.info(f"🔗 下载地址: {update_info.download_url}")
+            
+            # 检查是否已有下载任务在运行
+            if self._download_task and not self._download_task.done():
+                logger.warning("⚠️ 下载任务已在运行中，跳过此次请求")
+                QMessageBox.warning(
+                    self.parent,
+                    "下载进行中",
+                    "已有下载任务在进行中，请等待完成后再试。"
+                )
+                return
             
             # 创建进度对话框
             progress_dialog = QProgressDialog(
@@ -432,10 +584,21 @@ class AutoUpdater(QObject):
             )
             
             # 处理取消按钮
-            progress_dialog.canceled.connect(self.downloader.cancel_download)
+            progress_dialog.canceled.connect(self._cancel_download)
             
-            # 开始下载
-            asyncio.create_task(self.downloader.download_update(update_info))
+            # 直接使用 asyncio.create_task 开始下载
+            try:
+                loop = asyncio.get_event_loop()
+                self._download_task = asyncio.create_task(self._start_download_task(update_info))
+                self._download_task_id = "update_download"
+                logger.info(f"✅ 直接创建下载任务: {self._download_task_id}")
+            except Exception as e:
+                logger.error(f"❌ 创建下载任务失败: {e}")
+                QMessageBox.critical(
+                    self.parent,
+                    "下载失败",
+                    f"创建下载任务失败: {e}"
+                )
             
         except Exception as e:
             logger.error(f"启动更新过程失败: {e}")
@@ -444,6 +607,30 @@ class AutoUpdater(QObject):
                 "更新失败",
                 f"启动更新过程失败: {e}"
             )
+    
+    async def _start_download_task(self, update_info: UpdateInfo):
+        """启动下载任务的异步包装器"""
+        try:
+            logger.info(f"🚀 开始下载任务: {update_info.asset_name}")
+            download_path = await self.downloader.download_update(update_info)
+            logger.info(f"✅ 下载完成: {download_path}")
+            
+            # 使用 QTimer.singleShot 在主线程中发送信号
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.downloader.download_completed.emit(download_path))
+            
+        except Exception as e:
+            logger.error(f"❌ 下载任务失败: {e}")
+            # 使用 QTimer.singleShot 在主线程中发送信号
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.downloader.download_failed.emit(str(e)))
+    
+    def _cancel_download(self):
+        """取消下载"""
+        self.downloader.cancel_download()
+        if self._download_task and not self._download_task.done():
+            self._download_task.cancel()
+            logger.info("下载任务已取消")
     
     def update_download_progress(self, progress_dialog, downloaded, total):
         """更新下载进度"""
@@ -628,9 +815,26 @@ del /q "%~f0" 2>nul
     async def close(self):
         """关闭更新器"""
         try:
+            logger.info("关闭自动更新器...")
+            
+            # 停止定时器
             self.check_timer.stop()
+            
+            # 取消正在运行的任务
+            if self._check_task and not self._check_task.done():
+                self._check_task.cancel()
+                logger.info("检查更新任务已取消")
+            
+            if self._download_task and not self._download_task.done():
+                self._download_task.cancel()
+                logger.info("下载任务已取消")
+            
+            # 关闭组件
             await self.checker.close()
             await self.downloader.close()
+            
+            logger.info("自动更新器已关闭")
+            
         except Exception as e:
             logger.error(f"关闭更新器失败: {e}")
 

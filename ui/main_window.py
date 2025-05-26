@@ -31,6 +31,7 @@ from logic.constants import (
 from logic.game_limiter import GameLimiter
 from logic.database import sha256
 from logic.window_monitor import WindowMonitor
+from logic.task_manager import get_task_manager, run_task_safe
 from ui.base import StatusBar, SessionTimer, OverlayWindow, ShakeEffect
 from ui.math_panel_simple import SimpleMathPanel
 from ui.admin_panel import AdminPanel
@@ -51,6 +52,9 @@ class MainWindow(QMainWindow):
         self.countdown_window = None
         self.window_monitor = WindowMonitor(self.game_limiter, check_interval=15)
         
+        # 初始化任务管理器
+        self.task_manager = get_task_manager()
+        
         # 初始化自动更新器
         self.auto_updater = get_updater(self)
         self.auto_updater.update_available.connect(self.on_update_available)
@@ -62,7 +66,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1000, self.delayed_start_monitoring)
         
         # 启动时检查更新（延迟5秒，让程序完全启动）
-        QTimer.singleShot(5000, lambda: self.auto_updater.check_for_updates())
+        logger.info("设置自动更新检查定时器，5秒后开始检查")
+        QTimer.singleShot(5000, self.startup_update_check)
 
     # --- 工具方法 ---
     def make_label(self, text: str, bold: bool = False, align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignCenter) -> QLabel:
@@ -96,7 +101,8 @@ class MainWindow(QMainWindow):
         self.run_async(self.update_weekly_status())
 
     def run_async(self, coro) -> None:
-        asyncio.create_task(coro)
+        """安全地运行异步任务"""
+        run_task_safe(coro, delay_ms=10)
 
     def show_warning(self, msg: str) -> None:
         logger.warning(msg)
@@ -275,7 +281,7 @@ class MainWindow(QMainWindow):
         # 停止窗口监控，避免任务冲突
         if hasattr(self, 'window_monitor') and self.window_monitor.is_running:
             logger.info("进入管理员模式，停止窗口监控")
-            asyncio.create_task(self.window_monitor.stop_monitoring())
+            self._safe_stop_monitoring()
         
         self.admin_panel = AdminPanel(self, self.game_limiter)
         # 连接关闭信号，在关闭admin面板时恢复监控
@@ -292,52 +298,125 @@ class MainWindow(QMainWindow):
         """恢复窗口监控"""
         if hasattr(self, 'window_monitor') and not self.window_monitor.is_running:
             logger.info("恢复窗口监控")
-            asyncio.create_task(self.window_monitor.start_monitoring())
+            self._safe_start_monitoring()
     
     # --- 自动更新相关方法 ---
+    def startup_update_check(self):
+        """启动时的自动更新检查"""
+        logger.info("🚀 开始启动时的自动更新检查")
+        try:
+            # 检查自动更新器是否正确初始化
+            if not self.auto_updater:
+                logger.error("❌ 自动更新器未初始化")
+                return
+            
+            logger.info(f"📋 自动更新器状态: {type(self.auto_updater)}")
+            
+            # 检查是否可以更新
+            can_update, reason = self.auto_updater.can_update_now()
+            logger.info(f"🔍 更新检查状态: can_update={can_update}, reason='{reason}'")
+            
+            if not can_update:
+                logger.info(f"⚠️ 启动时无法检查更新: {reason}")
+                return
+            
+            # 开始自动检查
+            logger.info("🌐 开始自动检查更新...")
+            self.auto_updater.check_for_updates(manual=False)
+            
+        except Exception as e:
+            logger.error(f"❌ 启动时更新检查失败: {e}", exc_info=True)
+    
     def check_for_updates_manual(self):
         """手动检查更新"""
-        logger.info("用户手动检查更新")
+        logger.info("👤 用户手动检查更新")
         
-        # 检查是否可以更新
-        can_update, reason = self.auto_updater.can_update_now()
-        if not can_update:
-            self.show_warning(f"当前无法检查更新：{reason}\n\n请在游戏会话结束且没有数学练习进行时再试。")
-            return
-        
-        # 显示检查中的状态
-        self.update_button.setEnabled(False)
-        self.update_button.setText("Checking...")
-        
-        # 开始检查
-        self.auto_updater.check_for_updates(manual=True)
-        
-        # 5秒后恢复按钮状态（无论是否找到更新）
-        QTimer.singleShot(5000, self.restore_update_button)
+        try:
+            # 检查自动更新器状态
+            if not self.auto_updater:
+                logger.error("❌ 自动更新器未初始化")
+                self.show_error("自动更新器未初始化，请重启应用程序")
+                return
+            
+            logger.info(f"📋 自动更新器类型: {type(self.auto_updater)}")
+            
+            # 检查是否可以更新
+            can_update, reason = self.auto_updater.can_update_now()
+            logger.info(f"🔍 手动更新检查状态: can_update={can_update}, reason='{reason}'")
+            
+            if not can_update:
+                logger.warning(f"⚠️ 当前无法检查更新: {reason}")
+                self.show_warning(f"当前无法检查更新：{reason}\n\n请在游戏会话结束且没有数学练习进行时再试。")
+                return
+            
+            # 显示检查中的状态
+            logger.info("🔄 设置按钮为检查中状态")
+            self.update_button.setEnabled(False)
+            self.update_button.setText("Checking...")
+            
+            # 开始检查
+            logger.info("🌐 开始手动检查更新...")
+            self.auto_updater.check_for_updates(manual=True)
+            
+            # 10秒后恢复按钮状态（给更多时间完成检查）
+            logger.info("⏰ 设置10秒后恢复按钮状态")
+            QTimer.singleShot(10000, self.restore_update_button)
+            
+        except Exception as e:
+            logger.error(f"❌ 手动更新检查失败: {e}", exc_info=True)
+            self.show_error(f"检查更新时出错: {e}")
+            self.restore_update_button()
     
     def restore_update_button(self):
         """恢复更新按钮状态"""
-        self.update_button.setEnabled(True)
-        self.update_button.setText("Check Updates")
+        logger.info("🔄 恢复更新按钮状态")
+        try:
+            self.update_button.setEnabled(True)
+            self.update_button.setText("Check Updates")
+            logger.info("✅ 更新按钮状态已恢复")
+        except Exception as e:
+            logger.error(f"❌ 恢复更新按钮状态失败: {e}")
     
     def on_update_available(self, update_info):
         """处理发现更新的信号"""
-        logger.info(f"主窗口收到更新可用信号: {update_info.version}")
-        # 更新器会自动显示对话框，这里只需要恢复按钮状态
-        self.restore_update_button()
+        logger.info(f"🎉 主窗口收到更新可用信号!")
+        logger.info(f"   新版本: {update_info.version}")
+        logger.info(f"   文件名: {update_info.asset_name}")
+        logger.info(f"   文件大小: {update_info.asset_size:,} 字节")
+        logger.info(f"   下载地址: {update_info.download_url}")
+        
+        try:
+            # 恢复按钮状态
+            self.restore_update_button()
+            
+            # 显示更新对话框
+            logger.info("📋 准备显示更新对话框...")
+            self.auto_updater.show_update_dialog(update_info)
+            logger.info("✅ 更新对话框已显示")
+            
+        except Exception as e:
+            logger.error(f"❌ 处理更新可用信号失败: {e}", exc_info=True)
     
     def on_update_check_failed(self, error_msg):
         """处理更新检查失败的信号"""
-        logger.error(f"更新检查失败: {error_msg}")
-        self.restore_update_button()
+        logger.error(f"❌ 更新检查失败: {error_msg}")
         
-        # 如果是手动检查，显示错误信息
-        if not self.update_button.isEnabled():
-            QMessageBox.information(
-                self,
-                "检查更新",
-                f"检查更新失败：{error_msg}\n\n请检查网络连接后重试。"
-            )
+        try:
+            self.restore_update_button()
+            
+            # 如果是手动检查，显示错误信息
+            if hasattr(self, 'update_button') and not self.update_button.isEnabled():
+                logger.info("📋 显示更新检查失败对话框")
+                QMessageBox.information(
+                    self,
+                    "检查更新",
+                    f"检查更新失败：{error_msg}\n\n请检查网络连接后重试。"
+                )
+            else:
+                logger.info("ℹ️ 自动更新检查失败，不显示对话框")
+                
+        except Exception as e:
+            logger.error(f"❌ 处理更新检查失败信号时出错: {e}", exc_info=True)
 
     def end_session_early(self) -> None:
         """提前结束会话"""
@@ -437,7 +516,7 @@ class MainWindow(QMainWindow):
             self.stop_button.setEnabled(True)
             self.duration_entry.setEnabled(False)
             self.math_button.setEnabled(False)
-            await self.window_monitor.stop_monitoring()
+            self._safe_stop_monitoring()
             return True
         except Exception as e:
             self.show_error(f"Error starting game Session: {str(e)}")
@@ -530,6 +609,13 @@ class MainWindow(QMainWindow):
         try:
             logger.info("开始强制退出...")
             
+            # 取消所有任务管理器中的任务（使用同步方法）
+            try:
+                logger.info("取消所有任务...")
+                self.task_manager.cancel_all_tasks_sync()
+            except Exception as e:
+                logger.error(f"取消任务时出错: {e}")
+            
             # 重置鼠标设置到系统默认值
             try:
                 app = QApplication.instance()
@@ -616,10 +702,26 @@ class MainWindow(QMainWindow):
 
     def delayed_start_monitoring(self) -> None:
         """延迟启动窗口监控器"""
-        self.run_async(self.window_monitor.start_monitoring())
+        self._safe_start_monitoring()
 
     def timer_done(self) -> None:
         """计时器结束回调"""
         if self.session_active:
             logger.info("计时器结束，自动结束会话")
             self.run_async(self.end_session())
+
+    def _safe_start_monitoring(self):
+        """安全地启动监控"""
+        run_task_safe(
+            self.window_monitor.start_monitoring(),
+            task_id="start_monitoring",
+            delay_ms=10
+        )
+    
+    def _safe_stop_monitoring(self):
+        """安全地停止监控"""
+        run_task_safe(
+            self.window_monitor.stop_monitoring(),
+            task_id="stop_monitoring", 
+            delay_ms=10
+        )

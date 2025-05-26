@@ -10,13 +10,6 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, QTimer
 
 # 应用程序属性设置
-try:
-    from version import __version__, APP_DISPLAY_NAME
-    print(f"Starting {APP_DISPLAY_NAME} v{__version__}")
-except ImportError:
-    __version__ = "1.0.0"
-    APP_DISPLAY_NAME = "Game Time Limiter"
-    print(f"Starting {APP_DISPLAY_NAME} v{__version__}")
 
 # 设置基本日志记录器，其他模块的导入放到后面延迟加载
 logging.basicConfig(
@@ -103,7 +96,7 @@ def cleanup_resources():
             except Exception as e:
                 logger.error(f"停止事件循环时出错: {e}")
                 
-        # 6. 改进的应用程序资源清理
+                # 6. 改进的应用程序资源清理
         logger.info("清理应用程序相关资源...")
         try:
             if app:

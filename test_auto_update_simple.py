@@ -110,7 +110,7 @@ class SimpleUpdateTest(QMainWindow):
         self.log(f"UPDATE AVAILABLE!")
         self.log(f"Version: {update_info.version}")
         self.log(f"Download URL: {update_info.download_url}")
-        self.log(f"File size: {update_info.file_size} bytes")
+        self.log(f"File size: {update_info.asset_size} bytes")
         self.status_label.setText(f"Update available: v{update_info.version}")
         
     def on_update_failed(self, error_msg):

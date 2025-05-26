@@ -7,6 +7,9 @@ import psutil
 import pygetwindow as gw
 import subprocess
 
+# 导入任务管理器
+from logic.task_manager import get_task_manager, run_task_safe
+
 # 配置日志
 logger = logging.getLogger('window_monitor')
 
@@ -24,6 +27,8 @@ class WindowMonitor:
         self.check_interval = check_interval
         self.is_running = False
         self.monitor_task = None
+        self.task_manager = get_task_manager()  # 使用任务管理器
+        self._monitor_task_id = None  # 任务ID
         
         # 受限应用配置，可以在此处添加更多应用
         self.restricted_apps = [
@@ -49,11 +54,22 @@ class WindowMonitor:
             logger.info("监控已经在运行中")
             return
             
+        # 检查是否已有监控任务在运行
+        if self._monitor_task_id and self.task_manager.is_task_running(self._monitor_task_id):
+            logger.info("监控任务已在运行中")
+            return
+            
         self.is_running = True
         logger.info(f"开始监控活动窗口，检查间隔: {self.check_interval}秒")
         
-        # 创建监控任务
-        self.monitor_task = asyncio.create_task(self._monitor_loop())
+        # 使用任务管理器创建监控任务
+        self._monitor_task_id = run_task_safe(
+            self._monitor_loop(),
+            task_id="window_monitor",
+            on_complete=None,
+            on_error=lambda e: logger.error(f"监控任务出错: {e}"),
+            delay_ms=50  # 小延迟避免冲突
+        )
         
     async def stop_monitoring(self):
         """停止监控活动窗口"""
@@ -64,23 +80,18 @@ class WindowMonitor:
         logger.info("正在停止窗口监控...")
         self.is_running = False
         
+        # 使用任务管理器取消监控任务
+        if self._monitor_task_id:
+            self.task_manager.cancel_task_safe(self._monitor_task_id)
+            self._monitor_task_id = None
+        
+        # 兼容性：也处理旧的monitor_task
         if self.monitor_task:
             try:
                 self.monitor_task.cancel()
-                # 等待任务实际取消
-                try:
-                    await asyncio.wait_for(self.monitor_task, timeout=2.0)
-                except asyncio.CancelledError:
-                    logger.info("监控任务被取消")
-                except asyncio.TimeoutError:
-                    logger.warning("监控任务取消超时，强制停止")
-                except Exception as e:
-                    logger.error(f"等待监控任务取消时出错: {e}")
-                finally:
-                    self.monitor_task = None
-            except Exception as e:
-                logger.error(f"取消监控任务时出错: {e}")
                 self.monitor_task = None
+            except Exception as e:
+                logger.error(f"取消旧监控任务时出错: {e}")
         
         logger.info("窗口监控已完全停止")
     
