@@ -31,7 +31,7 @@ try:
     )
 except ImportError:
     # 如果版本文件不存在，使用默认值
-    __version__ = "1.0.0"
+    __version__ = "1.0.1"
     GITHUB_RELEASES_URL = "https://api.github.com/repos/yourusername/gamecontrol/releases"
     UPDATE_CHECK_INTERVAL = 24 * 60 * 60
     UPDATE_DOWNLOAD_TIMEOUT = 300
