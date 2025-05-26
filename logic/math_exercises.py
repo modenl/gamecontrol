@@ -160,39 +160,7 @@ class MathExercises:
     async def _generate_questions_async(self, force_regenerate=False):
         """异步生成题目"""
         try:
-            # 检查是否已经有今天的题目，且不强制重新生成
-            if not force_regenerate:
-                today_questions = await self.db.get_today_gpt_questions()
-                if today_questions:
-                    logger.info("今天已有题目，直接加载")
-                    self.questions = []
-                    for q in today_questions:
-                        # 详细记录从数据库加载的题目难度和奖励时间
-                        difficulty = q[8] if len(q) > 8 and q[8] is not None else None
-                        reward_minutes = q[5] if len(q) > 5 and q[5] is not None else 1.0
-                        logger.debug(f"从数据库加载题目ID={q[0]}，难度={difficulty}，奖励时间={reward_minutes}分钟")
-                        
-                        question_obj = {
-                            "question": q[2],  # question在索引2
-                            "answer": q[3] if len(q) > 3 and q[3] else "（无答案）",
-                            "explanation": q[6] if len(q) > 6 and q[6] else "",
-                            "difficulty": difficulty,
-                            "reward_minutes": reward_minutes,  # 添加奖励时间字段
-                            "is_correct": q[4]
-                        }
-                        self.questions.append(question_obj)
-                    
-                    logger.info(f"从数据库加载题目，难度: {[q.get('difficulty') for q in self.questions]}")
-                    
-                    # 设置当前索引为第一个未回答的问题
-                    self.current_index = 0
-                    for i, q in enumerate(self.questions):
-                        if q["is_correct"] is None:
-                            self.current_index = i
-                            break
-                    return True
-                    
-            # 如果没有今天的题目或强制重新生成，生成新题目
+            # 直接生成新题目（数据库检查已在get_daily_questions中完成）
             logger.info("开始生成新题目")
             self.questions = []
             
@@ -850,25 +818,38 @@ IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensur
         """获取今日题目 - 简化版"""
         # 检查是否已有缓存题目
         if not self.questions:
-            # 如果没有题目，生成新题目
+            # 如果没有题目，先尝试从数据库加载
             try:
-                logger.info("没有找到缓存题目，准备生成新题目")
-                await self._generate_questions_async(force_regenerate=False)
+                logger.info("检查数据库中是否已有今天的题目")
+                today_questions = await self.db.get_today_gpt_questions()
+                if today_questions and len(today_questions) >= 10:
+                    logger.info(f"从数据库加载到{len(today_questions)}道题目")
+                    self.questions = []
+                    for q in today_questions:
+                        difficulty = q[8] if len(q) > 8 and q[8] is not None else None
+                        reward_minutes = q[5] if len(q) > 5 and q[5] is not None else 1.0
+                        question_obj = {
+                            "question": q[2],
+                            "answer": q[3] if len(q) > 3 and q[3] else "（无答案）",
+                            "explanation": q[6] if len(q) > 6 and q[6] else "",
+                            "difficulty": difficulty,
+                            "reward_minutes": reward_minutes,
+                            "is_correct": q[4]
+                        }
+                        self.questions.append(question_obj)
+                    self.current_index = 0
+                    for i, q in enumerate(self.questions):
+                        if q["is_correct"] is None:
+                            self.current_index = i
+                            break
+                else:
+                    # 数据库中没有足够的题目，需要生成新题目
+                    logger.info("数据库中没有足够题目，开始生成新题目")
+                    await self._generate_questions_async(force_regenerate=True)
             except Exception as e:
-                logger.error(f"异步生成题目失败: {str(e)}")
+                logger.error(f"加载或生成题目失败: {str(e)}")
                 logger.exception("详细错误信息:")
                 return []
-        
-        # 确保题目数量正确
-        if len(self.questions) < 10:
-            logger.warning(f"题目数量不足，只有{len(self.questions)}道，尝试重新生成")
-            try:
-                # 尝试清空并重新生成
-                await self.clear_today_questions()
-                await self._generate_questions_async(force_regenerate=True)
-            except Exception as e:
-                logger.error(f"重新生成题目失败: {str(e)}")
-                logger.exception("详细错误信息:")
                 
         # 记录题目难度，使用GPT返回的原始难度
         if self.questions:
