@@ -96,6 +96,22 @@ python build.py --optimize 1
 2. 添加必要的测试
 3. 更新相关文档
 
+### AI开发规范
+
+本项目遵循严格的AI开发规范，详见 `AI_DEVELOPMENT_GUIDELINES.md`：
+
+**✅ 允许的操作：**
+- 添加可重复执行的集成测试（`test_integration_*.py`）
+- 创建永久性功能模块
+- 更新现有文档和配置
+
+**❌ 禁止的操作：**
+- 创建临时性测试文件（`test_fix_*.py`, `test_debug_*.py`）
+- 添加一次性修复脚本（`fix_*.py`, `cleanup_*.py`）
+- 创建临时文档（`*_FIX.md`, `*_SOLUTION.md`）
+
+所有新增文件必须是项目的永久组成部分，而不是临时解决方案。
+
 ## 许可证
 
 MIT License - 详见 LICENSE 文件

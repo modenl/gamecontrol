@@ -45,4 +45,36 @@ Desktop.ini
 # Build outputs
 build/
 dist/
-*.exe 
+*.exe
+
+# AI Development Guidelines - Forbidden temporary files
+# 根据AI开发规范，禁止提交以下临时文件：
+
+# 临时测试文件
+test_fix_*.py
+test_debug_*.py
+test_temp_*.py
+temp_test_*.py
+
+# 一次性修复脚本
+fix_*.py
+cleanup_*.py
+repair_*.py
+patch_*.py
+migrate_*.py
+
+# 临时文档
+*_FIX.md
+*_SOLUTION.md
+*_IMPLEMENTATION.md
+TEMP_*.md
+DEBUG_*.md
+
+# 调试和诊断工具
+debug_*.py
+diagnose_*.py
+
+# 临时备份文件
+*_backup.py
+*_old.py
+*_temp.py 
