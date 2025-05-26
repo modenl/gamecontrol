@@ -5,7 +5,6 @@ import subprocess
 import argparse
 import platform
 import time
-import psutil
 
 def check_dependencies():
     """Check and install necessary dependencies"""
@@ -75,6 +74,13 @@ def kill_processes_using_directory(directory):
     killed_processes = []
     
     try:
+        # Import psutil here to avoid import errors if not installed
+        try:
+            import psutil
+        except ImportError:
+            print("Warning: psutil not available, skipping process cleanup")
+            return False
+            
         for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
             try:
                 # Check if process executable is in the directory
