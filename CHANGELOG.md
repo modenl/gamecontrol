@@ -1,5 +1,22 @@
 # 更新日志 (Changelog)
 
+## [1.0.11] - 2025-05-26
+
+### 🐛 修复 (Fixed)
+- **修复PyInstaller构建时requests模块缺失问题**：
+  - 添加了完整的requests和httpx相关隐藏导入
+  - 包含requests.adapters, requests.sessions等子模块
+  - 添加urllib3.util, urllib3.poolmanager等依赖
+  - 确保所有网络请求相关模块都被正确打包
+
+### 🔧 改进 (Improved)
+- **增强PyInstaller构建配置**：
+  - 更全面的隐藏导入列表
+  - 确保所有必需的网络库都被包含
+  - 提高构建的可靠性和完整性
+
+---
+
 ## [1.0.10] - 2025-05-26
 
 ### 🔧 构建优化 (Build Optimization)

@@ -880,9 +880,6 @@ class Database:
                 if self.conn is not None and self.check_connection():
                     logger.info("数据库重新连接成功")
                     return True
-                else:
-                    logger.error("数据库重新连接失败：连接无效")
-                    return False
             except Exception as e:
                 logger.error(f"数据库重新连接失败: {e}")
                 self.conn = None

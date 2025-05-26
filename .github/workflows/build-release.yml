@@ -28,7 +28,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.13'
+        python-version: '3.11'
         
     - name: Cache pip dependencies
       uses: actions/cache@v4
@@ -48,11 +48,73 @@ jobs:
         # Set console to UTF-8
         chcp 65001
         
+    - name: Install system dependencies
+      run: |
+        # Install Visual C++ Redistributable for PyQt6
+        choco install vcredist2019 -y
+        
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        echo "=== Starting dependency installation ==="
+        
+        echo "Upgrading pip..."
+        python -m pip install --upgrade pip setuptools wheel
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to upgrade pip"
+          exit 1
+        }
+        
+        echo "Installing requirements..."
+        pip install --no-cache-dir -r requirements.txt
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to install requirements"
+          echo "=== Requirements file content ==="
+          Get-Content requirements.txt
+          echo "=== Pip debug info ==="
+          pip --version
+          pip config list
+          exit 1
+        }
+        
+        echo "Installing PyInstaller..."
         pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to install PyInstaller"
+          exit 1
+        }
+        
+        echo "=== Verifying critical imports ==="
+        try {
+          python -c "import PyQt6; print('PyQt6 OK')"
+          python -c "import psutil; print('psutil OK')"
+          python -c "import qasync; print('qasync OK')"
+          python -c "import openai; print('openai OK')"
+          echo "All critical imports successful"
+        } catch {
+          Write-Error "Critical import failed: $_"
+          echo "=== Installed packages ==="
+          pip list
+          exit 1
+        }
+        
+    - name: Debug environment
+      run: |
+        echo "=== Environment Debug Info ==="
+        echo "Python executable: $((Get-Command python).Source)"
+        echo "Python version: $(python --version)"
+        echo "Pip version: $(pip --version)"
+        echo "PyInstaller version: $(pyinstaller --version)"
+        echo "Working directory: $(Get-Location)"
+        echo "Directory contents:"
+        Get-ChildItem | Format-Table Name, Length, LastWriteTime
+        echo "=== Python packages ==="
+        pip list | Select-String -Pattern "(PyQt6|psutil|pyinstaller|qasync|openai)"
+        echo "=== System info ==="
+        python -c "import platform; print(f'Platform: {platform.platform()}')"
+        python -c "import sys; print(f'Python path: {sys.executable}')"
+        echo "=== Memory and disk info ==="
+        Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
+        Get-WmiObject -Class Win32_LogicalDisk | Select-Object DeviceID, Size, FreeSpace
         
     # UPX compression disabled to avoid DLL loading issues and ensure compatibility
         
@@ -71,19 +133,55 @@ jobs:
       run: |
         $version = "${{ steps.get_version.outputs.version }}"
         $versionParts = $version.Split('.')
+        if ($versionParts.Length -ne 3) {
+          Write-Error "Invalid version format: $version. Expected format: X.Y.Z"
+          exit 1
+        }
         $major = $versionParts[0]
         $minor = $versionParts[1]
         $patch = $versionParts[2]
         
-        # Update version.py
-        $content = Get-Content "version.py" -Raw
-        $content = $content -replace '__version__ = ".*"', "__version__ = `"$version`""
-        $content = $content -replace '"major": \d+', "`"major`": $major"
-        $content = $content -replace '"minor": \d+', "`"minor`": $minor"
-        $content = $content -replace '"patch": \d+', "`"patch`": $patch"
-        Set-Content "version.py" -Value $content
+        echo "Updating version to: $version (major: $major, minor: $minor, patch: $patch)"
         
-        echo "Updated version to $version"
+        # Update version.py with better error handling
+        try {
+          $content = Get-Content "version.py" -Raw -Encoding UTF8
+          $originalContent = $content
+          
+          # Update version string
+          $content = $content -replace '__version__ = "[^"]*"', "__version__ = `"$version`""
+          
+          # Update version info
+          $content = $content -replace '"major":\s*\d+', "`"major`": $major"
+          $content = $content -replace '"minor":\s*\d+', "`"minor`": $minor"
+          $content = $content -replace '"patch":\s*\d+', "`"patch`": $patch"
+          
+          # Verify changes were made
+          if ($content -eq $originalContent) {
+            Write-Error "No changes were made to version.py. Check regex patterns."
+            exit 1
+          }
+          
+          Set-Content "version.py" -Value $content -Encoding UTF8
+          echo "Successfully updated version.py"
+          
+          # Verify the update
+          $updatedContent = Get-Content "version.py" -Raw -Encoding UTF8
+          if ($updatedContent -match '__version__ = "([^"]*)"') {
+            $detectedVersion = $matches[1]
+            echo "Detected version in file: $detectedVersion"
+            if ($detectedVersion -ne $version) {
+              Write-Error "Version mismatch: expected $version, found $detectedVersion"
+              exit 1
+            }
+          } else {
+            Write-Error "Could not find version string in updated file"
+            exit 1
+          }
+        } catch {
+          Write-Error "Failed to update version.py: $_"
+          exit 1
+        }
         
     - name: Create .env.example
       run: |
@@ -92,10 +190,44 @@ jobs:
         
     - name: Build application (Standard)
       run: |
-        # Build standard version only using optimize 1 for consistency
-        python build.py --optimize 1
+        # Use simplified CI build script
+        echo "Starting CI build process..."
+        python build_ci.py --optimize 1
         
-        echo "Standard build completed"
+    - name: Diagnose build failure
+      if: failure()
+      run: |
+        echo "=== BUILD FAILURE DIAGNOSIS ==="
+        echo "Build step failed. Collecting diagnostic information..."
+        
+        echo "=== Current directory contents ==="
+        Get-ChildItem -Recurse | Format-Table Name, FullName, Length
+        
+        echo "=== Python environment ==="
+        python --version
+        pip list
+        
+        echo "=== System processes ==="
+        Get-Process | Where-Object {$_.ProcessName -like "*python*" -or $_.ProcessName -like "*pip*"} | Format-Table
+        
+        echo "=== Event logs (last 10 application errors) ==="
+        Get-EventLog -LogName Application -EntryType Error -Newest 10 | Format-Table TimeGenerated, Source, Message
+        
+        echo "=== Disk space ==="
+        Get-WmiObject -Class Win32_LogicalDisk | Select-Object DeviceID, Size, FreeSpace | Format-Table
+        
+        echo "=== Environment variables ==="
+        Get-ChildItem Env: | Where-Object {$_.Name -like "*PYTHON*" -or $_.Name -like "*PATH*"} | Format-Table
+        
+        if (Test-Path "build") {
+          echo "=== Build directory contents ==="
+          Get-ChildItem "build" -Recurse | Format-Table Name, FullName, Length
+        }
+        
+        if (Test-Path "dist") {
+          echo "=== Dist directory contents ==="
+          Get-ChildItem "dist" -Recurse | Format-Table Name, FullName, Length
+        }
         
     - name: Verify builds
       run: |
@@ -178,7 +310,7 @@ jobs:
         echo "Ref name: ${{ github.ref_name }}"
         echo "Repository: ${{ github.repository }}"
         echo "Actor: ${{ github.actor }}"
-        echo "Token length: ${{ length(secrets.GITHUB_TOKEN) }}"
+        echo "Token length: ${{ secrets.GITHUB_TOKEN != '' }}"
           
     - name: Create Release
       if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')

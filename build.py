@@ -254,8 +254,21 @@ def build(clean=True, optimize=0):
         '--hidden-import=win32security',
         '--hidden-import=psutil',
         '--hidden-import=requests',
+        '--hidden-import=requests.adapters',
+        '--hidden-import=requests.auth',
+        '--hidden-import=requests.cookies',
+        '--hidden-import=requests.exceptions',
+        '--hidden-import=requests.models',
+        '--hidden-import=requests.sessions',
         '--hidden-import=urllib3',
+        '--hidden-import=urllib3.util',
+        '--hidden-import=urllib3.util.retry',
+        '--hidden-import=urllib3.poolmanager',
         '--hidden-import=certifi',
+        '--hidden-import=httpx',
+        '--hidden-import=httpx._client',
+        '--hidden-import=httpx._config',
+        '--hidden-import=httpx._models',
     ])
     
     # Add extra options based on optimization level
