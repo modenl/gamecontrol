@@ -330,9 +330,7 @@ class AdminPanel(QDialog):
         math_layout = QVBoxLayout(math_group)
 
         reset_math_button = QPushButton("Reset Today's Math Questions")
-        reset_math_button.clicked.connect(
-            lambda: asyncio.create_task(self.reset_math_questions())
-        )
+        reset_math_button.clicked.connect(self.reset_math_questions_sync)
         math_layout.addWidget(reset_math_button)
 
         layout.addWidget(math_group)
@@ -548,6 +546,12 @@ class AdminPanel(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to delete record: {str(e)}")
 
+    def reset_math_questions_sync(self):
+        """重置数学题目的同步包装方法"""
+        logger.info("管理员请求重置数学题目")
+        # 创建异步任务
+        asyncio.create_task(self.reset_math_questions())
+    
     async def reset_math_questions(self):
         """重置数学题目"""
         try:
@@ -613,6 +617,7 @@ class AdminPanel(QDialog):
                     # 回到UI线程处理完成
                     self.on_reset_complete(progress_dialog)
                 except Exception as e:
+                    logger.error(f"重置数学题目失败: {e}")
                     # 回到UI线程处理错误
                     self.on_reset_error(progress_dialog, str(e))
             

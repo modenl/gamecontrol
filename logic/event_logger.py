@@ -58,6 +58,9 @@ class EventLogger:
             
             self.logger.addHandler(file_handler)
             self.logger.addHandler(console_handler)
+            
+            # 防止消息传播到父logger，避免重复输出
+            self.logger.propagate = False
         
         # 记录日志系统启动
         self.log_system_event("事件日志系统已启动")

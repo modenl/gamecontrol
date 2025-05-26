@@ -14,15 +14,20 @@ from logic.event_logger import get_event_logger
 logger = logging.getLogger('math_exercises')
 logger.setLevel(logging.INFO)
 
-# 添加控制台处理器
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(console_handler)
+# 只在没有处理器时添加处理器，避免重复配置
+if not logger.handlers:
+    # 添加控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(console_handler)
 
-# 添加文件处理器
-file_handler = logging.FileHandler('game_limiter.log', encoding='utf-8')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+    # 添加文件处理器
+    file_handler = logging.FileHandler('game_limiter.log', encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    
+    # 防止消息传播到父logger，避免重复输出
+    logger.propagate = False
 
 # 加载环境变量
 load_dotenv()
@@ -39,8 +44,6 @@ class MathExercises:
         self.api_error = None
         # 初始化事件日志记录器
         self.event_logger = get_event_logger()
-        # 防止重复生成的标志
-        self._generating = False
         
     async def initialize(self):
         """Async initialization to be called after construction"""
@@ -90,10 +93,8 @@ class MathExercises:
                         reward_minutes = 1.0  # 默认奖励时间
                         if len(q) > 8:
                             difficulty = q[8]  # difficulty在索引8
-                            logger.debug(f"从数据库加载题目，ID={q[0]}，难度={difficulty}")
                         if len(q) > 5:
                             reward_minutes = q[5] if q[5] is not None else 1.0  # reward_minutes在索引5
-                            logger.debug(f"从数据库加载题目，ID={q[0]}，奖励时间={reward_minutes}分钟")
                         
                         # 添加到题目列表，确保所有字段都有有效值
                         question_obj = {
@@ -120,7 +121,6 @@ class MathExercises:
                         self.current_index = i
                         break
                 logger.info(f"成功加载缓存题目: {len(self.questions)}道")
-                logger.info(f"加载的题目难度: {[q.get('difficulty') for q in self.questions]}")
             else:
                 logger.info("没有找到缓存的题目")
         except Exception as e:
@@ -161,15 +161,14 @@ class MathExercises:
         
     async def _generate_questions_async(self, force_regenerate=False):
         """异步生成题目"""
-        # 防止重复调用
-        if self._generating:
-            logger.warning("题目生成已在进行中，忽略重复调用")
-            return False
-            
-        self._generating = True
         try:
-            # 直接生成新题目（数据库检查已在get_daily_questions中完成）
-            logger.info("开始生成新题目")
+            # 如果强制重新生成，先清理
+            if force_regenerate:
+                logger.info("重新生成今日数学题目")
+                await self.clear_today_questions()
+            
+            # 直接生成新题目
+            logger.info("开始生成数学题目")
             self.questions = []
             
             if not openai.api_key:
@@ -332,8 +331,8 @@ Timestamp: {now_str}
             # 使用直接格式化的f-string，避免使用.format()方法
             formatted_prompt = all_questions_prompt
 
-            # 发送单一请求，增加随机性
-            logger.info("发送单一请求生成全部10道AMC8风格题目")
+            # 发送请求生成题目
+            logger.info("正在生成10道AMC8风格数学题目")
             try:
                 # 添加超时设置，防止请求挂起
                 response = await asyncio.wait_for(
@@ -362,14 +361,12 @@ Timestamp: {now_str}
                 logger.exception("详细API错误信息:")
                 raise ValueError(f"OpenAI API请求失败: {str(api_error)}")
             
-            # 解析题目 - 使用JSON格式强制返回
+            # 解析题目
             raw_content = response.choices[0].message.content
-            logger.info(f"[DEBUG] OpenAI response: {raw_content}")
             
             try:
-                # 由于使用了response_format="json_object"，应该直接是有效的JSON
+                # 解析JSON响应
                 result = json.loads(raw_content)
-                logger.info("JSON解析成功")
             except json.JSONDecodeError as e:
                 logger.error(f"JSON解析失败: {e}")
                 logger.error(f"响应内容: {raw_content}")
@@ -384,10 +381,9 @@ Timestamp: {now_str}
                 }
                 logger.error(f"JSON解析失败详情: {json_error_details}")
                 
-                # 不使用任何备用方案，直接抛出错误
+                # 抛出JSON解析错误
                 raise ValueError(f"OpenAI返回的不是有效的JSON格式: {str(e)}")
             all_questions = result.get("questions", [])
-            logger.info(f"[DEBUG] Generated questions count: {len(all_questions)}")
             
             # 确保生成了足够的题目
             if len(all_questions) < 10:
@@ -399,7 +395,6 @@ Timestamp: {now_str}
             for q in all_questions:
                 difficulty = q.get("difficulty")
                 reward_minutes = q.get("reward_minutes", 1.0)  # 默认1分钟
-                logger.debug(f"从GPT获取题目：问题={q['question'][:30]}...，难度={difficulty}，奖励={reward_minutes}分钟")
                 
                 # 后处理题目文本，转换LaTeX格式
                 processed_question = self._postprocess_question_text(q["question"])
@@ -414,8 +409,6 @@ Timestamp: {now_str}
                     "is_correct": None
                 }
                 self.questions.append(question_obj)
-                
-            logger.info(f"[DEBUG] total questions to insert: {len(self.questions)}")
             
             # 缓存生成的题目
             today = datetime.date.today().strftime("%Y-%m-%d")
@@ -439,7 +432,6 @@ Timestamp: {now_str}
                 # 同时保留原始题目文本以便显示
                 std_question = q["question"].strip().replace('\n', '').replace(' ', '')
                 original_question = q["question"].strip()  # 保留原始格式，只去除前后空白
-                logger.info(f"[DEBUG] 写入题目: {q['question'][:30]}..., 答案: {q['answer']}, 难度: {difficulty}")
                 
                 # 同时保存原始题目和标准化题目到数据库
                 # 使用question字段存储原始题目，使用std_question字段进行查重
@@ -458,7 +450,7 @@ Timestamp: {now_str}
                     c.execute("DELETE FROM math_exercises WHERE id=?", (row[0],))
                 self.db.conn.commit()
             
-            logger.info(f"[DEBUG] 已写入数据库题目数: {len(self.questions)}")
+            logger.info(f"成功生成并保存{len(self.questions)}道数学题目")
             self.current_index = 0
             return True
             
@@ -466,23 +458,14 @@ Timestamp: {now_str}
             logger.error(f"生成题目时出错: {e}")
             logger.exception("详细错误信息:")
             
-            # 记录详细的错误信息用于调试
-            error_details = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "api_key_exists": bool(openai.api_key),
-                "api_key_length": len(openai.api_key) if openai.api_key else 0,
-                "timestamp": datetime.datetime.now().isoformat()
-            }
-            
-            logger.error(f"题目生成失败详情: {error_details}")
+            # 记录错误信息
+            logger.error(f"题目生成失败: {type(e).__name__}: {str(e)}")
             
             # 不使用备用题目，直接抛出错误让调用者处理
             self.api_error = f"生成题目时出错: {str(e)}"
             raise
         finally:
-            # 重置生成标志
-            self._generating = False
+            pass  # 不再需要锁管理
     
     def get_current_question(self):
         """获取当前问题"""
@@ -553,11 +536,8 @@ Timestamp: {now_str}
             
             is_correct = abs(user_num - standard_num) <= tolerance
             
-            logger.info(f"数值比较: 用户={user_num}, 标准={standard_num}, 容差={tolerance:.3f}, 正确={is_correct}")
-            
             # 使用GPT指定的奖励时间
             reward = reward_minutes if is_correct else 0
-            logger.info(f"答案检查：难度={difficulty}, GPT指定奖励={reward_minutes}分钟, 实际奖励={reward}分钟")
             
             # 更新当前问题对象
             question_obj["is_correct"] = is_correct
@@ -863,13 +843,10 @@ IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensur
                 logger.exception("详细错误信息:")
                 return []
                 
-        # 记录题目难度，使用GPT返回的原始难度
+        # 确保题目难度设置正确
         if self.questions:
-            logger.info(f"GPT返回的题目难度: {[q.get('difficulty', '?') for q in self.questions]}")
-            
             # 确保最后一题是难度4（竞赛级）
             if len(self.questions) >= 10 and self.questions[9]['difficulty'] != 4:
-                logger.info(f"确保最后一题是竞赛级难度4")
                 self.questions[9]['difficulty'] = 4
                 
                 # 更新数据库中最后一题的难度
@@ -879,7 +856,6 @@ IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensur
                     
                     if len(questions) >= 10:
                         question_id = questions[9][0]  # 获取最后一题的ID
-                        logger.info(f"更新竞赛题ID {question_id} 的难度为4")
                         self.db.conn.execute(
                             "UPDATE math_exercises SET difficulty=? WHERE id=?",
                             (4, question_id)
@@ -918,11 +894,8 @@ IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensur
         self.db.close()
 
     async def regenerate_daily_questions_async(self):
-        """异步重新生成今天的题目 - 简化版"""
-        # 清除今天的题目
-        await self.clear_today_questions()
-        
-        # 重新生成题目，强制重新生成
+        """异步重新生成今天的题目"""
+        logger.info("开始重新生成今日数学题目")
         return await self._generate_questions_async(force_regenerate=True)
 
     async def regenerate_daily_questions(self):

@@ -49,10 +49,11 @@ class SimpleMathPanel(QDialog):
     # 定义信号
     on_complete_signal = pyqtSignal(float)  # 参数:奖励分钟数
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, math_exercises=None):
         super().__init__(parent)
         self.parent = parent
-        self.math = MathExercises()
+        self.math = math_exercises  # 使用传入的共享实例
+        logger.info(f"数学面板初始化: math_exercises={'已传入' if math_exercises else '未传入'}, id={id(math_exercises) if math_exercises else 'None'}")
         self.loading = False
         self.answer_checked = False
         self.current_question = None
@@ -353,10 +354,13 @@ class SimpleMathPanel(QDialog):
         self.show_progress("Loading today's math questions...")
 
         try:
-            # 初始化数学练习模块 - 确保正确等待异步初始化
-            logger.info("初始化数学练习模块...")
-            self.math = await MathExercises().initialize()
-            logger.info("数学练习模块初始化完成")
+            # 检查是否有传入的数学练习实例
+            if self.math is None:
+                logger.info("创建新的数学练习模块实例...")
+                self.math = await MathExercises().initialize()
+                logger.info("数学练习模块初始化完成")
+            else:
+                logger.info("使用共享的数学练习模块实例")
 
             # 获取今日题目
             logger.info("获取今日题目...")

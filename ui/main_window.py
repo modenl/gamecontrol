@@ -261,7 +261,8 @@ class MainWindow(QMainWindow):
             return
             
         logger.info("打开数学练习面板")
-        self.math_panel = SimpleMathPanel(self)
+        logger.info(f"传递给数学面板的math_exercises实例: id={id(self.game_limiter.math_exercises)}")
+        self.math_panel = SimpleMathPanel(self, self.game_limiter.math_exercises)
         self.math_panel.on_complete_signal.connect(self.on_math_complete)
         self.math_panel.show()
 
