@@ -1165,6 +1165,31 @@ del /q "%~f0" 2>nul
         
         return script_path
     
+    def reconnect_signals_to_parent(self, new_parent):
+        """重新连接信号到新的父窗口"""
+        try:
+            logger.info(f"重新连接AutoUpdater信号到新父窗口: {new_parent}")
+            
+            # 断开旧的连接（如果存在）
+            try:
+                self.update_available.disconnect()
+                self.update_check_failed.disconnect()
+                logger.info("已断开旧的信号连接")
+            except:
+                pass  # 如果没有连接则忽略
+            
+            # 连接到新的父窗口
+            if new_parent and hasattr(new_parent, 'on_update_available'):
+                self.update_available.connect(new_parent.on_update_available)
+                logger.info("已连接update_available信号")
+            
+            if new_parent and hasattr(new_parent, 'on_update_check_failed'):
+                self.update_check_failed.connect(new_parent.on_update_check_failed)
+                logger.info("已连接update_check_failed信号")
+                
+        except Exception as e:
+            logger.error(f"重新连接信号失败: {e}")
+
     async def close(self):
         """关闭更新器"""
         try:
@@ -1199,5 +1224,12 @@ def get_updater(parent=None) -> AutoUpdater:
     """获取全局更新器实例"""
     global _updater_instance
     if _updater_instance is None:
+        logger.info(f"创建新的AutoUpdater实例，parent: {parent}")
         _updater_instance = AutoUpdater(parent)
+    else:
+        # 如果实例已存在但parent不同，更新parent并重新连接信号
+        if parent is not None and _updater_instance.parent != parent:
+            logger.info(f"更新AutoUpdater的parent: {_updater_instance.parent} -> {parent}")
+            _updater_instance.parent = parent
+            _updater_instance.reconnect_signals_to_parent(parent)
     return _updater_instance 

@@ -785,10 +785,20 @@ class MainWindow(QMainWindow):
             logger.info("🚀 创建自动更新器...")
             from logic.auto_updater import get_updater
             self.auto_updater = get_updater(self)
+            
+            # get_updater会自动处理信号连接，但我们再确认一次
+            try:
+                # 先断开可能存在的连接
+                self.auto_updater.update_available.disconnect(self.on_update_available)
+                self.auto_updater.update_check_failed.disconnect(self.on_update_check_failed)
+            except:
+                pass  # 如果没有连接则忽略
+            
+            # 重新连接信号
             self.auto_updater.update_available.connect(self.on_update_available)
             self.auto_updater.update_check_failed.connect(self.on_update_check_failed)
             self._auto_updater_ready = True
-            logger.info("✅ 自动更新器初始化完成")
+            logger.info("✅ 自动更新器初始化完成，信号已连接")
             
             # 立即开始启动检查，不再延迟
             logger.info("🚀 立即开始启动更新检查")
