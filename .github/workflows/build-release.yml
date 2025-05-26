@@ -151,18 +151,44 @@ jobs:
           $content = Get-Content "version.py" -Raw -Encoding UTF8
           $originalContent = $content
           
+          # Debug: Show current version in file
+          if ($content -match '__version__ = "([^"]*)"') {
+            $currentVersion = $matches[1]
+            echo "Current version in file: $currentVersion"
+            if ($currentVersion -eq $version) {
+              echo "WARNING: Target version ($version) is the same as current version ($currentVersion)"
+            }
+          }
+          
           # Update version string
           $content = $content -replace '__version__ = "[^"]*"', "__version__ = `"$version`""
           
-          # Update version info
-          $content = $content -replace '"major":\s*\d+', "`"major`": $major"
-          $content = $content -replace '"minor":\s*\d+', "`"minor`": $minor"
-          $content = $content -replace '"patch":\s*\d+', "`"patch`": $patch"
+          # Update version info (Python dictionary format with spaces)
+          $content = $content -replace '"major":\s*\d+,', "`"major`": $major,"
+          $content = $content -replace '"minor":\s*\d+,', "`"minor`": $minor,"
+          $content = $content -replace '"patch":\s*\d+,', "`"patch`": $patch,"
           
           # Verify changes were made
           if ($content -eq $originalContent) {
-            Write-Error "No changes were made to version.py. Check regex patterns."
-            exit 1
+            echo "DEBUG: No changes detected. Checking if version is already correct..."
+            
+            # Check if the version is already correct
+            $versionMatch = $content -match '__version__ = "([^"]*)"'
+            
+            if ($versionMatch) {
+              $currentVersion = if ($content -match '__version__ = "([^"]*)"') { $matches[1] } else { "unknown" }
+              
+              if ($currentVersion -eq $version) {
+                echo "Version is already correct: $version"
+                echo "Skipping version update as no changes are needed."
+              } else {
+                Write-Error "No changes were made to version.py. Check regex patterns."
+                exit 1
+              }
+            } else {
+              Write-Error "No changes were made to version.py. Check regex patterns."
+              exit 1
+            }
           }
           
           Set-Content "version.py" -Value $content -Encoding UTF8
