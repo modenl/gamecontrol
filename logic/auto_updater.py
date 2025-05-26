@@ -341,15 +341,10 @@ class AutoUpdater(QObject):
         self.checker = UpdateChecker()
         self.downloader = UpdateDownloader()
         
-        # 连接信号
+        # 连接信号 - 只连接checker的信号到处理方法
         self.checker.update_available.connect(self.on_update_available)
         self.checker.no_update_available.connect(self.on_no_update_available)
         self.checker.check_failed.connect(self.on_check_failed)
-        
-        # 连接自己的信号到处理方法
-        self.update_available.connect(self.on_update_available)
-        self.no_update_available.connect(self.on_no_update_available)
-        self.update_check_failed.connect(self.on_check_failed)
         
         # 任务管理 - 直接使用 asyncio.Task 而不是 TaskManager
         self._check_task = None
@@ -514,14 +509,14 @@ class AutoUpdater(QObject):
             
             if update_info:
                 logger.info(f"🎉 发现新版本: {update_info.version}")
-                # 在主线程中发送信号
+                # 在主线程中调用处理方法
                 from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: self.update_available.emit(update_info))
+                QTimer.singleShot(0, lambda: self.on_update_available(update_info))
             else:
                 logger.info("ℹ️ 当前版本是最新的")
-                # 在主线程中发送信号
+                # 在主线程中调用处理方法
                 from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: self.no_update_available.emit())
+                QTimer.singleShot(0, lambda: self.on_no_update_available())
                 
         except Exception as e:
             logger.error(f"❌ 异步检查更新失败: {e}", exc_info=True)
