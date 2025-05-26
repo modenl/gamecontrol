@@ -305,8 +305,10 @@ class UpdateDownloader(QObject):
                     
                     total_size = int(response.headers.get('content-length', 0))
                     downloaded_size = 0
+                    logger.info(f"📏 开始下载，总大小: {total_size:,} 字节")
                     
                     with open(download_path, 'wb') as f:
+                        chunk_count = 0
                         for chunk in response.iter_content(chunk_size=8192):
                             if self.cancelled:
                                 logger.info("下载被用户取消")
@@ -315,11 +317,21 @@ class UpdateDownloader(QObject):
                             if chunk:  # 过滤掉保持连接的chunk
                                 f.write(chunk)
                                 downloaded_size += len(chunk)
+                                chunk_count += 1
                                 
-                                # 发送进度信号（使用简单的方式）
-                                # 由于在线程中，我们需要使用QTimer来在主线程中发送信号
-                                from PyQt6.QtCore import QTimer
-                                QTimer.singleShot(0, lambda: self.download_progress.emit(downloaded_size, total_size))
+                                # 每10个chunk更新一次进度，减少信号发送频率
+                                if chunk_count % 10 == 0 or downloaded_size >= total_size:
+                                    # 直接发送信号，Qt会自动处理线程安全
+                                    try:
+                                        percentage = int((downloaded_size / total_size) * 100) if total_size > 0 else 0
+                                        logger.info(f"📊 下载进度: {downloaded_size:,}/{total_size:,} 字节 ({percentage}%)")
+                                        self.download_progress.emit(downloaded_size, total_size)
+                                    except Exception as e:
+                                        logger.warning(f"发送进度信号失败: {e}")
+                        
+                        # 确保最终进度为100%
+                        if downloaded_size > 0:
+                            self.download_progress.emit(downloaded_size, total_size)
                     
                     return download_path
             
@@ -802,16 +814,21 @@ class AutoUpdater(QObject):
     
     def update_download_progress(self, progress_dialog, downloaded, total):
         """更新下载进度"""
+        logger.info(f"🔄 update_download_progress被调用: {downloaded:,}/{total:,} 字节")
+        
         if total > 0:
             percentage = int((downloaded / total) * 100)
+            logger.info(f"📊 设置进度条值: {percentage}%")
             progress_dialog.setValue(percentage)
             
             # 更新标签文本
             downloaded_mb = downloaded / (1024 * 1024)
             total_mb = total / (1024 * 1024)
-            progress_dialog.setLabelText(
-                f"正在下载更新... {downloaded_mb:.1f}/{total_mb:.1f} MB ({percentage}%)"
-            )
+            label_text = f"正在下载更新... {downloaded_mb:.1f}/{total_mb:.1f} MB ({percentage}%)"
+            logger.info(f"📝 设置标签文本: {label_text}")
+            progress_dialog.setLabelText(label_text)
+        else:
+            logger.warning("⚠️ total_size为0，无法计算进度")
     
     def on_download_completed(self, progress_dialog, download_path):
         """下载完成处理"""
