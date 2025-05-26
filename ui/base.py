@@ -73,8 +73,23 @@ class StatusBar(QWidget):
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(5, 2, 5, 2)
         
+        # 消息标签（左侧）
         self.label = QLabel("")
         self.layout.addWidget(self.label)
+        
+        # 弹性空间
+        self.layout.addStretch()
+        
+        # 版本标签（右侧）
+        try:
+            from version import __version__
+            version_text = f"v{__version__}"
+        except ImportError:
+            version_text = "v?.?.?"
+        
+        self.version_label = QLabel(version_text)
+        self.version_label.setStyleSheet("color: #888888; font-size: 10px;")
+        self.layout.addWidget(self.version_label)
         
         self.setLayout(self.layout)
         self.message_timer = QTimer(self)

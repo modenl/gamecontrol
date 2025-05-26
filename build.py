@@ -253,6 +253,9 @@ def build(clean=True, optimize=0):
     cmd.extend([
         '--hidden-import=win32security',
         '--hidden-import=psutil',
+        '--hidden-import=requests',
+        '--hidden-import=urllib3',
+        '--hidden-import=certifi',
     ])
     
     # Add extra options based on optimization level

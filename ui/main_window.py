@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
         # 延迟初始化自动更新器，确保qasync事件循环已准备好
         self.auto_updater = None
         self._auto_updater_init_attempts = 0
+        self._auto_updater_ready = False
         # 不在构造函数中初始化，而是在showEvent中初始化
         
         self.setup_window()
@@ -111,7 +112,15 @@ class MainWindow(QMainWindow):
     # --- UI 分块 ---
     def setup_window(self) -> None:
         """设置窗口属性"""
-        self.setWindowTitle(UI_TITLE)
+        # 导入版本信息并设置窗口标题
+        try:
+            from version import __version__
+            window_title = f"{UI_TITLE} v{__version__}"
+        except ImportError:
+            window_title = UI_TITLE
+            logger.warning("无法导入版本信息，使用默认标题")
+        
+        self.setWindowTitle(window_title)
         self.resize(UI_WIDTH, UI_HEIGHT)
         self.setMinimumSize(UI_MIN_WIDTH, UI_MIN_HEIGHT)
         try:
@@ -127,8 +136,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_auto_updater_initialized'):
             self._auto_updater_initialized = True
             logger.info("🪟 主窗口已显示，准备初始化自动更新器...")
-            # 延迟5秒确保所有组件都已稳定
-            QTimer.singleShot(5000, self._init_auto_updater)
+            # 减少延迟时间，2秒足够确保组件稳定
+            QTimer.singleShot(2000, self._init_auto_updater)
         
     def setup_ui(self) -> None:
         """设置UI组件"""
@@ -323,18 +332,18 @@ class MainWindow(QMainWindow):
         logger.info("🚀 开始启动时的自动更新检查")
         try:
             # 检查自动更新器是否正确初始化
-            if not self.auto_updater:
-                logger.warning("⚠️ 自动更新器尚未初始化，跳过启动时检查")
+            if not self.auto_updater or not self._auto_updater_ready:
+                logger.warning("⚠️ 自动更新器尚未就绪，跳过启动时检查")
                 return
             
-            logger.info(f"📋 自动更新器状态: {type(self.auto_updater)}")
+            logger.info(f"📋 自动更新器类型: {type(self.auto_updater).__name__}")
             
             # 检查是否可以更新
             can_update, reason = self.auto_updater.can_update_now()
             logger.info(f"🔍 更新检查状态: can_update={can_update}, reason='{reason}'")
             
             if not can_update:
-                logger.info(f"⚠️ 启动时无法检查更新: {reason}")
+                logger.info(f"ℹ️ 启动时暂不检查更新: {reason}")
                 return
             
             # 开始自动检查
@@ -350,12 +359,12 @@ class MainWindow(QMainWindow):
         
         try:
             # 检查自动更新器状态
-            if not self.auto_updater:
-                logger.warning("⚠️ 自动更新器尚未初始化")
+            if not self.auto_updater or not self._auto_updater_ready:
+                logger.warning("⚠️ 自动更新器尚未就绪")
                 self.show_warning("自动更新器正在初始化中，请稍后再试")
                 return
             
-            logger.info(f"📋 自动更新器类型: {type(self.auto_updater)}")
+            logger.info(f"📋 自动更新器类型: {type(self.auto_updater).__name__}")
             
             # 检查是否可以更新
             can_update, reason = self.auto_updater.can_update_now()
@@ -375,9 +384,9 @@ class MainWindow(QMainWindow):
             logger.info("🌐 开始手动检查更新...")
             self.auto_updater.check_for_updates(manual=True)
             
-            # 10秒后恢复按钮状态（给更多时间完成检查）
-            logger.info("⏰ 设置10秒后恢复按钮状态")
-            QTimer.singleShot(10000, self.restore_update_button)
+            # 减少恢复按钮的等待时间
+            logger.info("⏰ 设置6秒后恢复按钮状态")
+            QTimer.singleShot(6000, self.restore_update_button)
             
         except Exception as e:
             logger.error(f"❌ 手动更新检查失败: {e}", exc_info=True)
@@ -721,71 +730,67 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"清理主窗口资源时出错: {e}")
 
+    def _is_ready_for_auto_updater(self):
+        """快速检查是否准备好初始化自动更新器"""
+        try:
+            # 检查窗口状态
+            if not self.isVisible():
+                return False, "窗口未显示"
+            
+            # 检查事件循环
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop or not loop.is_running():
+                    return False, "事件循环未运行"
+            except:
+                return False, "无法获取事件循环"
+            
+            return True, "准备就绪"
+        except Exception as e:
+            return False, f"检查失败: {e}"
+
     def _init_auto_updater(self):
         """延迟初始化自动更新器"""
         try:
             self._auto_updater_init_attempts += 1
-            logger.info(f"🔄 延迟初始化自动更新器 (尝试 {self._auto_updater_init_attempts}/5)...")
+            logger.info(f"🔄 初始化自动更新器 (尝试 {self._auto_updater_init_attempts}/3)...")
             
-            # 限制重试次数
-            if self._auto_updater_init_attempts > 5:
+            # 减少重试次数，避免过度延迟
+            if self._auto_updater_init_attempts > 3:
                 logger.error("❌ 自动更新器初始化重试次数超限，放弃初始化")
                 self.auto_updater = None
                 return
             
-            # 检查qasync事件循环是否已正确设置
-            import asyncio
-            current_loop = None
-            try:
-                current_loop = asyncio.get_event_loop()
-                logger.info(f"📋 当前事件循环类型: {type(current_loop)}")
-                logger.info(f"📋 事件循环是否运行: {current_loop.is_running()}")
-                
-                # 检查是否是qasync事件循环
-                if hasattr(current_loop, '_app') and current_loop._app is not None:
-                    logger.info("✅ qasync事件循环已正确设置")
-                    
-                    # 额外检查：确保事件循环正在运行
-                    if not current_loop.is_running():
-                        logger.warning("⚠️ qasync事件循环未运行，延迟重试")
-                        QTimer.singleShot(3000, self._init_auto_updater)
-                        return
-                        
-                else:
-                    logger.warning("⚠️ qasync事件循环可能未正确设置，延迟重试")
-                    QTimer.singleShot(3000, self._init_auto_updater)
-                    return
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ 检查事件循环时出错: {e}，延迟重试")
-                QTimer.singleShot(3000, self._init_auto_updater)
+            # 快速检查是否准备就绪
+            ready, reason = self._is_ready_for_auto_updater()
+            if not ready:
+                logger.warning(f"⚠️ 尚未准备就绪: {reason}，延迟重试")
+                # 根据原因调整延迟时间
+                delay = 1000 if "窗口" in reason else 1500
+                QTimer.singleShot(delay, self._init_auto_updater)
                 return
             
-            # 额外的稳定性检查：确保主窗口完全初始化
-            if not self.isVisible():
-                logger.warning("⚠️ 主窗口尚未完全显示，延迟重试")
-                QTimer.singleShot(2000, self._init_auto_updater)
-                return
-            
-            logger.info("🚀 开始创建自动更新器...")
+            logger.info("🚀 创建自动更新器...")
             from logic.auto_updater import get_updater
             self.auto_updater = get_updater(self)
             self.auto_updater.update_available.connect(self.on_update_available)
             self.auto_updater.update_check_failed.connect(self.on_update_check_failed)
+            self._auto_updater_ready = True
             logger.info("✅ 自动更新器初始化完成")
             
-            # 初始化成功后，设置启动检查
-            logger.info("⏰ 设置启动更新检查定时器，5秒后开始检查")
-            QTimer.singleShot(5000, self.startup_update_check)
+            # 立即开始启动检查，不再延迟
+            logger.info("🚀 立即开始启动更新检查")
+            self.startup_update_check()
             
         except Exception as e:
             logger.error(f"❌ 自动更新器初始化失败: {e}")
             self.auto_updater = None
             
-            # 如果还有重试机会，延迟重试
-            if self._auto_updater_init_attempts < 5:
-                logger.info(f"⏰ 将在5秒后重试初始化...")
-                QTimer.singleShot(5000, self._init_auto_updater)
+            # 减少重试延迟
+            if self._auto_updater_init_attempts < 3:
+                logger.info(f"⏰ 将在1.5秒后重试初始化...")
+                QTimer.singleShot(1500, self._init_auto_updater)
 
     def delayed_start_monitoring(self) -> None:
         """延迟启动窗口监控器"""

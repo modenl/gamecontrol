@@ -391,7 +391,9 @@ class Database:
         """异步执行SQL查询"""
         # 确保数据库连接有效
         if self.conn is None:
-            self.reconnect()
+            logger.warning("数据库连接为空，尝试重新连接...")
+            if not self.reconnect():
+                raise Exception("无法建立数据库连接")
             
         async with self._lock:
             try:
@@ -399,13 +401,19 @@ class Database:
                 result = await asyncio.to_thread(self._execute_query_sync, query, params, fetchone, commit)
                 return result
             except sqlite3.Error as e:
-                if commit:
-                    await asyncio.to_thread(self.conn.rollback)
+                if commit and self.conn is not None:
+                    try:
+                        await asyncio.to_thread(self.conn.rollback)
+                    except Exception as rollback_error:
+                        logger.error(f"回滚操作失败: {rollback_error}")
                 logger.error(f"执行查询失败: {query}, 错误: {e}")
                 raise
 
     def _execute_query_sync(self, query, params=(), fetchone=False, commit=False):
         """同步执行SQL查询(内部使用)"""
+        if self.conn is None:
+            raise Exception("数据库连接为空")
+            
         c = self.conn.cursor()
         c.execute(query, params)
         
@@ -548,6 +556,13 @@ class Database:
             添加的记录ID
         """
         try:
+            # 确保数据库连接有效
+            if self.conn is None:
+                logger.warning("数据库连接为空，尝试重新连接...")
+                self.reconnect()
+                if self.conn is None:
+                    raise Exception("无法建立数据库连接")
+            
             today = datetime.date.today().strftime("%Y-%m-%d")
             # 标准化题目文本，防止重复
             std_question = question.strip().replace('\n', '').replace(' ', '').replace('\r', '')
@@ -609,7 +624,12 @@ class Database:
             
             return exercise_id
         except Exception as e:
-            self.conn.rollback()
+            # 安全地处理回滚操作
+            if self.conn is not None:
+                try:
+                    self.conn.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"回滚操作失败: {rollback_error}")
             logger.error(f"添加数学练习记录失败: {e}")
             raise
 
@@ -676,6 +696,13 @@ class Database:
             explanations: 可选的解释列表
         """
         try:
+            # 确保数据库连接有效
+            if self.conn is None:
+                logger.warning("数据库连接为空，尝试重新连接...")
+                self.reconnect()
+                if self.conn is None:
+                    raise Exception("无法建立数据库连接")
+            
             today = datetime.date.today().strftime("%Y-%m-%d")
             
             # 在一个事务中执行多个操作
@@ -765,6 +792,14 @@ class Database:
     def optimize_database(self):
         """优化数据库性能和修复问题"""
         try:
+            # 确保数据库连接有效
+            if self.conn is None:
+                logger.warning("数据库连接为空，尝试重新连接...")
+                self.reconnect()
+                if self.conn is None:
+                    logger.error("无法建立数据库连接，优化操作失败")
+                    return False
+            
             c = self.conn.cursor()
             # 修复潜在的NULL问题
             c.execute("UPDATE math_exercises SET is_gpt = 0 WHERE is_gpt IS NULL AND is_correct IS NOT NULL")
@@ -812,12 +847,46 @@ class Database:
                 # 强制设置为None，确保不会重复关闭
                 self.conn = None
 
+    def check_connection(self):
+        """检查数据库连接是否有效"""
+        try:
+            if self.conn is None:
+                return False
+            # 测试连接
+            c = self.conn.cursor()
+            c.execute("SELECT 1")
+            c.fetchone()
+            return True
+        except Exception as e:
+            logger.warning(f"数据库连接检查失败: {e}")
+            return False
+
     def reconnect(self):
         """重新连接数据库（如果已关闭）"""
-        if self.conn is None:
+        if self.conn is None or not self.check_connection():
             logger.info("重新连接数据库...")
-            self.connect()
-            return True
+            try:
+                # 先关闭现有连接（如果存在）
+                if self.conn is not None:
+                    try:
+                        self.conn.close()
+                    except:
+                        pass
+                    self.conn = None
+                
+                # 建立新连接
+                self.connect()
+                # 验证连接是否成功
+                if self.conn is not None and self.check_connection():
+                    logger.info("数据库重新连接成功")
+                    return True
+                else:
+                    logger.error("数据库重新连接失败：连接无效")
+                    return False
+            except Exception as e:
+                logger.error(f"数据库重新连接失败: {e}")
+                self.conn = None
+                return False
         return False
 
     async def get_setting(self, key, default=None):

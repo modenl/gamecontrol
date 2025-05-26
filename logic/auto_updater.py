@@ -326,6 +326,11 @@ class AutoUpdater(QObject):
         self.checker.no_update_available.connect(self.on_no_update_available)
         self.checker.check_failed.connect(self.on_check_failed)
         
+        # 连接自己的信号到处理方法
+        self.update_available.connect(self.on_update_available)
+        self.no_update_available.connect(self.on_no_update_available)
+        self.update_check_failed.connect(self.on_check_failed)
+        
         # 任务管理 - 直接使用 asyncio.Task 而不是 TaskManager
         self._check_task = None
         self._check_task_id = None
@@ -420,11 +425,11 @@ class AutoUpdater(QObject):
                 return
             
             logger.info("📝 创建更新检查任务...")
-            # 使用 QTimer 延迟执行，避免事件循环问题
+            # 减少延迟，50ms足够
             try:
                 from PyQt6.QtCore import QTimer
-                # 延迟100ms执行，确保事件循环已准备好
-                QTimer.singleShot(100, lambda: self._create_check_task())
+                # 延迟50ms执行，减少等待时间
+                QTimer.singleShot(50, lambda: self._create_check_task())
                 logger.info("✅ 已安排更新检查任务")
             except Exception as e:
                 logger.error(f"❌ 安排更新检查任务失败: {e}")

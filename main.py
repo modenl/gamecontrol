@@ -106,7 +106,7 @@ def cleanup_resources():
             except Exception as e:
                 logger.error(f"停止事件循环时出错: {e}")
                 
-                # 6. 改进的应用程序资源清理
+        # 6. 改进的应用程序资源清理
         logger.info("清理应用程序相关资源...")
         try:
             if app:

@@ -45,7 +45,7 @@ Desktop.ini
 # Build outputs
 build/
 dist/
-*.exe
+*.exe 
 
 # AI Development Guidelines - Forbidden temporary files
 # 根据AI开发规范，禁止提交以下临时文件：
