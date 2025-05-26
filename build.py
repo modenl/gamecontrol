@@ -4,9 +4,19 @@ import shutil
 import subprocess
 import argparse
 import platform
+import time
+import psutil
 
 def check_dependencies():
     """Check and install necessary dependencies"""
+    # 检查 Python 版本
+    python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    print(f"[INFO] Using Python {python_version}")
+    
+    if sys.version_info < (3, 10):
+        print("[WARNING] Python 3.10+ recommended for best compatibility")
+    elif sys.version_info >= (3, 14):
+        print("[WARNING] Python version may be too new, consider using 3.13")
     required_packages = [
         'pyinstaller',
         'PyQt6',
@@ -56,6 +66,126 @@ def create_env_example():
     else:
         print("[OK] .env.example already exists")
 
+def kill_processes_using_directory(directory):
+    """Kill processes that might be using files in the directory"""
+    if not os.path.exists(directory):
+        return
+    
+    print(f"Checking for processes using files in {directory}...")
+    killed_processes = []
+    
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+            try:
+                # Check if process executable is in the directory
+                if proc.info['exe'] and directory.lower() in proc.info['exe'].lower():
+                    print(f"Found process using directory: {proc.info['name']} (PID: {proc.info['pid']})")
+                    proc.terminate()
+                    killed_processes.append(proc.info['name'])
+                    continue
+                
+                # Check command line arguments
+                if proc.info['cmdline']:
+                    cmdline = ' '.join(proc.info['cmdline'])
+                    if directory.lower() in cmdline.lower():
+                        print(f"Found process with directory in cmdline: {proc.info['name']} (PID: {proc.info['pid']})")
+                        proc.terminate()
+                        killed_processes.append(proc.info['name'])
+                        
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        print(f"Warning: Could not check all processes: {e}")
+    
+    if killed_processes:
+        print(f"Terminated processes: {', '.join(set(killed_processes))}")
+        time.sleep(2)  # Give processes time to terminate
+    
+    return len(killed_processes) > 0
+
+def safe_rmtree(path, max_retries=5):
+    """Safely remove directory tree with retries for Windows file locking issues"""
+    if not os.path.exists(path):
+        return True
+    
+    print(f"Removing directory: {path}")
+    
+    for attempt in range(max_retries):
+        try:
+            # First attempt: normal removal
+            shutil.rmtree(path)
+            print(f"Successfully removed {path}")
+            return True
+            
+        except PermissionError as e:
+            print(f"Attempt {attempt + 1}/{max_retries}: Permission denied - {e}")
+            
+            if attempt == 0:
+                # First retry: try to kill processes using the directory
+                if kill_processes_using_directory(os.path.abspath(path)):
+                    print("Killed processes, retrying...")
+                    time.sleep(1)
+                    continue
+            
+            # Try PowerShell Remove-Item as fallback (Windows-specific)
+            if platform.system() == "Windows" and attempt == 1:
+                try:
+                    print("Trying PowerShell Remove-Item...")
+                    import subprocess
+                    result = subprocess.run([
+                        'powershell', '-Command', 
+                        f'Remove-Item -Path "{path}" -Recurse -Force -ErrorAction SilentlyContinue'
+                    ], capture_output=True, text=True, timeout=30)
+                    
+                    if result.returncode == 0 and not os.path.exists(path):
+                        print(f"Successfully removed {path} using PowerShell")
+                        return True
+                    else:
+                        print("PowerShell removal failed or incomplete")
+                except Exception as ps_e:
+                    print(f"PowerShell removal failed: {ps_e}")
+            
+            if attempt < max_retries - 1:
+                # Try to change permissions and retry
+                try:
+                    print("Attempting to change file permissions...")
+                    for root, dirs, files in os.walk(path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            try:
+                                os.chmod(file_path, 0o777)
+                            except:
+                                pass
+                        for dir in dirs:
+                            dir_path = os.path.join(root, dir)
+                            try:
+                                os.chmod(dir_path, 0o777)
+                            except:
+                                pass
+                except:
+                    pass
+                
+                print(f"Waiting {2 * (attempt + 1)} seconds before retry...")
+                time.sleep(2 * (attempt + 1))
+            else:
+                print(f"Failed to remove {path} after {max_retries} attempts")
+                print("You may need to:")
+                print("1. Close any file explorers or editors that might have files open")
+                print("2. Run the build script as administrator")
+                print("3. Manually delete the directory and try again")
+                print("4. Try: Remove-Item -Path \"" + path + "\" -Recurse -Force")
+                return False
+                
+        except Exception as e:
+            print(f"Attempt {attempt + 1}/{max_retries}: Unexpected error - {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                print(f"Failed to remove {path}: {e}")
+                return False
+    
+    return False
+
 def install_upx():
     """Check if UPX is installed, prompt for installation if not found"""
     try:
@@ -85,10 +215,22 @@ def build(clean=True, optimize=0):
     # Clean old build files
     if clean:
         print("Cleaning old build files...")
+        
+        # Use safe removal for build directory
         if os.path.exists('build'):
-            shutil.rmtree('build')
+            if not safe_rmtree('build'):
+                print("Warning: Could not completely remove build directory")
+        
+        # Use safe removal for dist directory
         if os.path.exists('dist'):
-            shutil.rmtree('dist')
+            if not safe_rmtree('dist'):
+                print("Error: Could not remove dist directory. Build cannot continue.")
+                print("\nTroubleshooting steps:")
+                print("1. Close any file explorers showing the dist folder")
+                print("2. Close any running GameTimeLimiter processes")
+                print("3. Run: python cleanup_processes.py --auto")
+                print("4. Try building again")
+                return False
     else:
         print("Keeping old build files...")
     
@@ -153,7 +295,11 @@ def build(clean=True, optimize=0):
     cmd.append('main.py')
     
     # Execute build
-    subprocess.check_call(cmd)
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        print(f"Build failed with error: {e}")
+        return False
     
     # If high optimization is enabled and UPX is found, compress executable
     if optimize >= 2 and install_upx():
@@ -176,6 +322,8 @@ def build(clean=True, optimize=0):
         print("Note: Directory mode used for faster startup, keep folder integrity.")
     else:
         print("Executable located at: dist/GameTimeLimiter.exe")
+    
+    return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Build GameTimeLimiter application')
@@ -184,4 +332,6 @@ if __name__ == "__main__":
                         help='Optimization level: 0=no optimization, 1=light optimization, 2=high optimization (faster startup but uses directory structure)')
     args = parser.parse_args()
     
-    build(clean=not args.no_clean, optimize=args.optimize) 
+    success = build(clean=not args.no_clean, optimize=args.optimize)
+    if not success:
+        sys.exit(1) 

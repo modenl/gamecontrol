@@ -880,8 +880,13 @@ REM Check if the main process is still running
 tasklist /FI "IMAGENAME eq GameTimeLimiter.exe" 2>NUL | find /I /N "GameTimeLimiter.exe">NUL
 if "%ERRORLEVEL%"=="0" (
     echo Main process still running, waiting longer...
-    timeout /t 5 /nobreak >nul
+    timeout /t 10 /nobreak >nul
 )
+
+REM Force kill any remaining processes
+echo Cleaning up any remaining processes...
+taskkill /F /IM "GameTimeLimiter.exe" 2>nul
+timeout /t 2 /nobreak >nul
 
 REM Check if update file exists
 if not exist "{update_file}" (
@@ -896,25 +901,68 @@ if /i "{update_file_ext}"==".zip" (
     echo Extracting: {update_file}
     echo To directory: {current_dir}
     
-    REM Use PowerShell to extract ZIP file
-    powershell -command "try {{ Expand-Archive -Path '{update_file}' -DestinationPath '{current_dir}' -Force; Write-Host 'Extraction completed successfully' }} catch {{ Write-Host 'Extraction failed:' $_.Exception.Message; exit 1 }}"
+    REM Create temporary extraction directory
+    set "TEMP_EXTRACT_DIR=%TEMP%\\gamecontrol_extract_%RANDOM%"
+    mkdir "%TEMP_EXTRACT_DIR%"
+    
+    REM Use PowerShell to extract ZIP file to temp directory first
+    powershell -command "try {{ Expand-Archive -Path '{update_file}' -DestinationPath '%TEMP_EXTRACT_DIR%' -Force; Write-Host 'Extraction completed successfully' }} catch {{ Write-Host 'Extraction failed:' $_.Exception.Message; exit 1 }}"
     if errorlevel 1 (
         echo Failed to extract update ZIP file
         if exist "{backup_path}" (
             echo Restoring backup...
             copy /y "{backup_path}" "{current_exe}"
         )
+        rmdir /s /q "%TEMP_EXTRACT_DIR%" 2>nul
         pause
         exit /b 1
     )
     
-    REM Look for the main executable in the extracted files
-    if exist "{current_dir}\\GameTimeLimiter.exe" (
-        echo Found extracted executable: GameTimeLimiter.exe
-    ) else (
-        echo Warning: GameTimeLimiter.exe not found in extracted files
-        dir "{current_dir}" /b
+    REM Find the executable in the extracted files
+    set "NEW_EXE_PATH="
+    for /r "%TEMP_EXTRACT_DIR%" %%f in (GameTimeLimiter.exe) do (
+        set "NEW_EXE_PATH=%%f"
+        goto :found_exe
     )
+    
+    :found_exe
+    if not defined NEW_EXE_PATH (
+        echo Error: GameTimeLimiter.exe not found in extracted files
+        dir "%TEMP_EXTRACT_DIR%" /s /b
+        if exist "{backup_path}" (
+            echo Restoring backup...
+            copy /y "{backup_path}" "{current_exe}"
+        )
+        rmdir /s /q "%TEMP_EXTRACT_DIR%" 2>nul
+        pause
+        exit /b 1
+    )
+    
+    echo Found executable at: %NEW_EXE_PATH%
+    
+    REM Copy the new executable
+    copy /y "%NEW_EXE_PATH%" "{current_exe}"
+    if errorlevel 1 (
+        echo Failed to copy new executable
+        if exist "{backup_path}" (
+            echo Restoring backup...
+            copy /y "{backup_path}" "{current_exe}"
+        )
+        rmdir /s /q "%TEMP_EXTRACT_DIR%" 2>nul
+        pause
+        exit /b 1
+    )
+    
+    REM Copy any additional files from the extracted directory
+    echo Copying additional files...
+    for %%f in ("%TEMP_EXTRACT_DIR%\\*") do (
+        if not "%%~nxf"=="GameTimeLimiter.exe" (
+            copy /y "%%f" "{current_dir}\\" 2>nul
+        )
+    )
+    
+    REM Clean up temporary extraction directory
+    rmdir /s /q "%TEMP_EXTRACT_DIR%" 2>nul
     
 ) else (
     echo Installing update executable...
@@ -940,6 +988,18 @@ if /i "{update_file_ext}"==".zip" (
     echo Executable updated successfully
 )
 
+REM Verify the new executable
+echo Verifying new executable...
+if not exist "{current_exe}" (
+    echo Error: New executable not found after update
+    if exist "{backup_path}" (
+        echo Restoring backup...
+        copy /y "{backup_path}" "{current_exe}"
+    )
+    pause
+    exit /b 1
+)
+
 REM Clean up temporary files
 echo Cleaning up temporary files...
 del /q "{update_file}" 2>nul
@@ -948,12 +1008,24 @@ echo Update completed successfully!
 echo Restarting application in 3 seconds...
 timeout /t 3 /nobreak >nul
 
-REM Start the updated application
+REM Start the updated application with proper working directory
 echo Starting: {current_exe}
+echo Working directory: {current_dir}
+cd /d "{current_dir}"
 start "" "{current_exe}"
 
-REM Wait a moment before cleaning up script
-timeout /t 2 /nobreak >nul
+REM Wait a moment to ensure the application starts
+timeout /t 3 /nobreak >nul
+
+REM Verify the application started
+tasklist /FI "IMAGENAME eq GameTimeLimiter.exe" 2>NUL | find /I /N "GameTimeLimiter.exe">NUL
+if "%ERRORLEVEL%"=="0" (
+    echo Application started successfully
+) else (
+    echo Warning: Application may not have started properly
+    echo You may need to start it manually: {current_exe}
+    pause
+)
 
 REM Clean up this script
 del /q "%~f0" 2>nul
