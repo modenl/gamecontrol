@@ -10,13 +10,11 @@ import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
-import httpx
 import requests
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QApplication
 
-# 注意：不再使用 TaskManager，直接使用 asyncio.create_task
-# from logic.task_manager import get_task_manager, run_task_safe
+# 使用线程池执行异步任务，避免qasync兼容性问题
 
 # 导入版本信息
 try:
@@ -406,11 +404,12 @@ class AutoUpdater(QObject):
         self.checker.no_update_available.connect(self.on_no_update_available)
         self.checker.check_failed.connect(self.on_check_failed)
         
-        # 任务管理 - 直接使用 asyncio.Task 而不是 TaskManager
-        self._check_task = None
+        # 任务状态跟踪
         self._check_task_id = None
-        self._download_task = None
         self._download_task_id = None
+        
+        # 添加手动检查标志
+        self._is_manual_check = False
         
         # 加载上次检查时间
         self.last_check_time = self.load_last_check_time()
@@ -486,6 +485,9 @@ class AutoUpdater(QObject):
         """
         logger.info(f"🔍 检查更新请求: manual={manual}")
         
+        # 保存手动检查标志
+        self._is_manual_check = manual
+        
         # 检查是否需要更新
         should_check = manual or self.should_check_for_updates()
         logger.info(f"📋 是否需要检查: {should_check}")
@@ -495,7 +497,7 @@ class AutoUpdater(QObject):
             self.update_check_started.emit()
             
             # 检查是否已有检查任务在运行
-            if self._check_task and not self._check_task.done():
+            if self._check_task_id:
                 logger.warning("⚠️ 更新检查任务已在运行中，跳过此次请求")
                 return
             
@@ -542,6 +544,14 @@ class AutoUpdater(QObject):
             
             self._check_task_id = "update_check"
             logger.info(f"✅ 更新检查任务已创建: {self._check_task_id}")
+            
+            # 设置任务完成后的清理
+            def clear_check_task():
+                self._check_task_id = None
+                logger.info("✅ 检查任务状态已清理")
+            
+            # 10秒后自动清理任务状态（防止状态卡住）
+            QTimer.singleShot(10000, clear_check_task)
         except Exception as e:
             logger.error(f"❌ 创建更新检查任务失败: {e}")
             self._handle_check_error(e)
@@ -610,34 +620,59 @@ class AutoUpdater(QObject):
         logger.info(f"   当前parent: {self.parent}")
         logger.info(f"   parent类型: {type(self.parent).__name__ if self.parent else 'None'}")
         
-        # 首先发送信号通知主窗口
+        # 发送信号通知主窗口，让主窗口决定如何处理
         logger.info("📡 发送update_available信号到主窗口...")
         try:
             # 检查信号连接状态
-            receivers = self.update_available.receivers()
-            logger.info(f"📊 update_available信号接收者数量: {receivers}")
+            try:
+                receivers = self.update_available.receivers()
+                logger.info(f"📊 update_available信号接收者数量: {receivers}")
+            except AttributeError:
+                logger.info("📊 信号接收者检查跳过（PyQt6兼容性）")
             
             self.update_available.emit(update_info)
             logger.info("✅ update_available信号已发送")
         except Exception as e:
             logger.error(f"❌ 发送update_available信号失败: {e}")
         
-        # 检查是否可以更新
-        can_update, reason = self.can_update_now()
-        logger.info(f"🔍 can_update_now结果: can_update={can_update}, reason='{reason}'")
-        
-        if not can_update:
-            logger.info(f"⚠️ 当前无法更新: {reason}")
-            # 可以选择稍后提醒用户
-            return
-        
-        # 显示更新对话框
-        logger.info("📋 准备显示更新对话框...")
-        self.show_update_dialog(update_info)
+        # 不再自动显示更新对话框，由主窗口控制
     
     def on_no_update_available(self):
         """处理无更新可用"""
         logger.info("当前已是最新版本")
+        
+        # 如果是手动检查，显示提示对话框
+        if self._is_manual_check and self.parent:
+            logger.info("📋 手动检查更新，显示'已是最新版本'提示")
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                from datetime import datetime
+                
+                # 格式化当前时间
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                
+                message = f"""您当前使用的已是最新版本！
+
+当前版本: {__version__}
+检查时间: {current_time}
+
+感谢您使用 {APP_DISPLAY_NAME}！"""
+                
+                QMessageBox.information(
+                    self.parent,
+                    f"{APP_DISPLAY_NAME} - 检查更新",
+                    message
+                )
+                logger.info("✅ 已显示'最新版本'提示对话框")
+                
+            except Exception as e:
+                logger.error(f"❌ 显示'最新版本'提示失败: {e}")
+        
+        # 重置手动检查标志
+        self._is_manual_check = False
+        
+        # 发送信号给主窗口
+        self.no_update_available.emit()
     
     def on_check_failed(self, error_msg: str):
         """处理检查失败"""
@@ -702,6 +737,36 @@ class AutoUpdater(QObject):
         except Exception as e:
             logger.error(f"❌ 显示更新对话框失败: {e}", exc_info=True)
     
+    def start_update_with_admin_auth(self, update_info: UpdateInfo):
+        """需要管理员验证的更新流程"""
+        try:
+            logger.info("🔐 开始需要管理员验证的更新流程...")
+            
+            # 检查是否可以更新
+            can_update, reason = self.can_update_now()
+            logger.info(f"🔍 can_update_now结果: can_update={can_update}, reason='{reason}'")
+            
+            if not can_update:
+                logger.warning(f"⚠️ 当前无法更新: {reason}")
+                QMessageBox.warning(
+                    self.parent,
+                    "无法更新",
+                    f"当前无法进行更新：{reason}\n\n请在游戏会话结束且没有数学练习进行时再试。"
+                )
+                return
+            
+            # 显示更新对话框
+            logger.info("📋 显示更新确认对话框...")
+            self.show_update_dialog(update_info)
+            
+        except Exception as e:
+            logger.error(f"❌ 管理员验证更新流程失败: {e}", exc_info=True)
+            QMessageBox.critical(
+                self.parent,
+                "更新失败",
+                f"启动更新流程失败: {e}"
+            )
+    
     def start_update_process(self, update_info: UpdateInfo):
         """开始更新过程"""
         try:
@@ -711,7 +776,7 @@ class AutoUpdater(QObject):
             logger.info(f"🔗 下载地址: {update_info.download_url}")
             
             # 检查是否已有下载任务在运行
-            if self._download_task and not self._download_task.done():
+            if self._download_task_id:
                 logger.warning("⚠️ 下载任务已在运行中，跳过此次请求")
                 QMessageBox.warning(
                     self.parent,
@@ -771,6 +836,14 @@ class AutoUpdater(QObject):
                 
                 self._download_task_id = "update_download"
                 logger.info(f"✅ 下载任务已创建: {self._download_task_id}")
+                
+                # 设置任务完成后的清理
+                def clear_download_task():
+                    self._download_task_id = None
+                    logger.info("✅ 下载任务状态已清理")
+                
+                # 30秒后自动清理任务状态（防止状态卡住）
+                QTimer.singleShot(30000, clear_download_task)
             except Exception as e:
                 logger.error(f"❌ 创建下载任务失败: {e}")
                 progress_dialog.close()
@@ -811,7 +884,6 @@ class AutoUpdater(QObject):
         """取消下载"""
         logger.info("用户请求取消下载")
         self.downloader.cancel_download()
-        # 注意：使用 TaskManager 时，任务取消由 TaskManager 内部处理
         logger.info("下载取消请求已发送")
     
     def update_download_progress(self, progress_dialog, downloaded, total):
@@ -964,7 +1036,12 @@ class AutoUpdater(QObject):
                 
                 # 给脚本一点时间启动
                 import time
-                time.sleep(1)
+                time.sleep(0.5)  # 减少等待时间
+                
+                # 设置更新标志，跳过管理员密码验证
+                if self.parent:
+                    self.parent._updating = True
+                    logger.info("🔧 设置更新标志，跳过管理员密码验证")
                 
                 # 退出应用程序
                 logger.info("🔚 退出应用程序以完成更新...")
@@ -1058,27 +1135,51 @@ class AutoUpdater(QObject):
         # 获取更新文件的扩展名
         update_file_ext = os.path.splitext(update_file)[1].lower()
         
+        # 确保路径使用正确的分隔符并转义特殊字符
+        update_file = update_file.replace('/', '\\')
+        current_exe = current_exe.replace('/', '\\')
+        current_dir = current_dir.replace('/', '\\')
+        if backup_path:
+            backup_path = backup_path.replace('/', '\\')
+        
         # 构建脚本内容
+        log_file = os.path.join(current_dir, "update_script.log").replace('/', '\\')
+        
         script_content = f"""@echo off
+setlocal enabledelayedexpansion
+set "LOG_FILE={log_file}"
+echo Starting GameTimeLimiter update process... > "%LOG_FILE%"
+echo Update file: {update_file} >> "%LOG_FILE%"
+echo Target executable: {current_exe} >> "%LOG_FILE%"
+echo Backup path: {backup_path if backup_path else "None"} >> "%LOG_FILE%"
+echo Script started at: %DATE% %TIME% >> "%LOG_FILE%"
+
 echo Starting GameTimeLimiter update process...
 echo Update file: {update_file}
 echo Target executable: {current_exe}
 echo Backup path: {backup_path if backup_path else "None"}
 
-REM Wait for main process to exit
-timeout /t 5 /nobreak >nul
+REM Wait for main process to exit gracefully (allow time for admin password input)
+echo Waiting for main process to exit gracefully...
+set /a "wait_count=0"
+:wait_loop
+timeout /t 1 /nobreak >nul
+set /a "wait_count+=1"
 
 REM Check if the main process is still running
 tasklist /FI "IMAGENAME eq GameTimeLimiter.exe" 2>NUL | find /I /N "GameTimeLimiter.exe">NUL
 if "%ERRORLEVEL%"=="0" (
-    echo Main process still running, waiting longer...
-    timeout /t 10 /nobreak >nul
+    if %wait_count% LSS 30 (
+        echo Main process still running, waiting... (%wait_count%/30)
+        goto wait_loop
+    ) else (
+        echo Main process still running after 30 seconds, force closing...
+        taskkill /F /IM "GameTimeLimiter.exe" 2>nul
+        timeout /t 1 /nobreak >nul
+    )
+) else (
+    echo Main process has exited cleanly after %wait_count% seconds
 )
-
-REM Force kill any remaining processes
-echo Cleaning up any remaining processes...
-taskkill /F /IM "GameTimeLimiter.exe" 2>nul
-timeout /t 2 /nobreak >nul
 
 REM Check if update file exists
 if not exist "{update_file}" (
@@ -1197,26 +1298,59 @@ echo Cleaning up temporary files...
 del /q "{update_file}" 2>nul
 
 echo Update completed successfully!
-echo Restarting application in 3 seconds...
-timeout /t 3 /nobreak >nul
+echo Restarting application...
+timeout /t 1 /nobreak >nul
 
-REM Start the updated application with proper working directory
-echo Starting: {current_exe}
+REM Start the updated application with clean environment
+echo Starting application with clean environment...
+echo Target: {current_exe}
 echo Working directory: {current_dir}
+
 cd /d "{current_dir}"
+echo Current directory after cd: %CD%
+
+REM Clear ALL PyInstaller environment variables that could interfere
+echo Clearing PyInstaller environment variables...
+set "_MEIPASS="
+set "_MEIPASS2="
+set "_PYI_APPLICATION_HOME_DIR="
+set "_PYI_ARCHIVE_FILE="
+set "_PYI_PARENT_PROCESS_LEVEL="
+set "PYINSTALLER_RUNTIME_TMPDIR="
+set "QML2_IMPORT_PATH="
+set "QT_PLUGIN_PATH="
+
+REM Clean the PATH variable to remove PyInstaller temp directories
+echo Cleaning PATH variable...
+set "CLEAN_PATH="
+for %%i in ("%PATH:;=" "%") do (
+    echo %%i | findstr /C:"_MEI" >nul
+    if errorlevel 1 (
+        if defined CLEAN_PATH (
+            set "CLEAN_PATH=!CLEAN_PATH!;%%~i"
+        ) else (
+            set "CLEAN_PATH=%%~i"
+        )
+    )
+)
+set "PATH=%CLEAN_PATH%"
+
+REM Use start command with clean environment to launch the application
+echo Starting application with clean environment...
 start "" "{current_exe}"
 
-REM Wait a moment to ensure the application starts
-timeout /t 3 /nobreak >nul
+REM Wait briefly for the application to start
+timeout /t 2 /nobreak >nul
 
 REM Verify the application started
 tasklist /FI "IMAGENAME eq GameTimeLimiter.exe" 2>NUL | find /I /N "GameTimeLimiter.exe">NUL
 if "%ERRORLEVEL%"=="0" (
-    echo Application started successfully
+    echo Application started successfully!
 ) else (
     echo Warning: Application may not have started properly
-    echo You may need to start it manually: {current_exe}
-    pause
+    echo Please try starting it manually: {current_exe}
+    echo Press any key to continue...
+    pause >nul
 )
 
 REM Clean up this script
@@ -1264,14 +1398,14 @@ del /q "%~f0" 2>nul
             # 停止定时器
             self.check_timer.stop()
             
-            # 取消正在运行的任务
-            if self._check_task and not self._check_task.done():
-                self._check_task.cancel()
-                logger.info("检查更新任务已取消")
+            # 清理任务状态
+            if self._check_task_id:
+                logger.info("清理检查更新任务状态")
+                self._check_task_id = None
             
-            if self._download_task and not self._download_task.done():
-                self._download_task.cancel()
-                logger.info("下载任务已取消")
+            if self._download_task_id:
+                logger.info("清理下载任务状态")
+                self._download_task_id = None
             
             # 关闭组件
             await self.checker.close()

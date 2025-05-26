@@ -6,7 +6,6 @@ numpy
 markdown
 psutil
 python-markdown-math
-httpx
 requests
 Pillow
 pygetwindow

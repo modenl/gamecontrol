@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.session_active = False
         self.countdown_window = None
         self.window_monitor = WindowMonitor(self.game_limiter, check_interval=15)
+        self._updating = False  # 更新标志，用于跳过管理员密码验证
         
         # 初始化任务管理器
         self.task_manager = get_task_manager()
@@ -150,6 +151,8 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._create_timer_panel())
         main_layout.addWidget(self._create_control_panel())
         self.status_bar = StatusBar()
+        # 连接更新通知点击信号
+        self.status_bar.update_notification_clicked.connect(self.on_update_notification_clicked)
         main_layout.addWidget(self.status_bar)
 
     def _create_status_panel(self) -> QFrame:
@@ -410,17 +413,15 @@ class MainWindow(QMainWindow):
         logger.info(f"   文件名: {update_info.asset_name}")
         logger.info(f"   文件大小: {update_info.asset_size:,} 字节")
         logger.info(f"   下载地址: {update_info.download_url}")
-        logger.info(f"   调用者: {self}")
-        logger.info(f"   auto_updater: {self.auto_updater}")
         
         try:
             # 恢复按钮状态
             self.restore_update_button()
             
-            # 显示更新对话框
-            logger.info("📋 主窗口准备显示更新对话框...")
-            self.auto_updater.show_update_dialog(update_info)
-            logger.info("✅ 主窗口更新对话框已显示")
+            # 在状态栏显示更新通知，而不是直接显示对话框
+            logger.info("📋 在状态栏显示更新通知...")
+            self.status_bar.show_update_notification(update_info)
+            logger.info("✅ 更新通知已显示在状态栏")
             
         except Exception as e:
             logger.error(f"❌ 主窗口处理更新可用信号失败: {e}", exc_info=True)
@@ -456,6 +457,70 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             logger.error(f"❌ 处理更新检查失败信号时出错: {e}", exc_info=True)
+    
+    def on_no_update_available(self):
+        """处理无更新可用的信号"""
+        logger.info("📋 主窗口收到无更新可用信号")
+        
+        try:
+            # 恢复更新按钮状态
+            self.restore_update_button()
+            
+            # 隐藏可能存在的更新通知
+            self.status_bar.hide_update_notification()
+            
+            logger.info("✅ 更新按钮状态已恢复，更新通知已隐藏")
+            
+        except Exception as e:
+            logger.error(f"❌ 处理无更新可用信号时出错: {e}", exc_info=True)
+    
+    def on_update_notification_clicked(self, update_info):
+        """处理更新通知点击事件"""
+        logger.info(f"🖱️ 用户点击了更新通知: {update_info.version}")
+        
+        try:
+            # 要求管理员身份验证
+            logger.info("🔐 要求管理员身份验证...")
+            password, ok = QInputDialog.getText(
+                self, 
+                "Administrator Verification", 
+                "Administrator password is required to download and install updates.\n\nPlease enter administrator password:", 
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or not password:
+                logger.info("❌ 用户取消管理员验证或未输入密码")
+                return
+            
+            # 验证管理员密码
+            from logic.database import sha256
+            from logic.constants import ADMIN_PASS_HASH
+            
+            password_hash = sha256(password)
+            if password_hash != ADMIN_PASS_HASH:
+                logger.warning("❌ 管理员密码错误")
+                self.show_warning("Incorrect administrator password. Update cancelled.")
+                self.run_async(ShakeEffect.shake(self))
+                return
+            
+            logger.info("✅ 管理员身份验证成功")
+            
+            # 隐藏状态栏的更新通知
+            self.status_bar.hide_update_notification()
+            
+            # 检查自动更新器状态
+            if not self.auto_updater or not self._auto_updater_ready:
+                logger.error("❌ 自动更新器不可用")
+                self.show_error("Auto-updater is not available. Please try again later.")
+                return
+            
+            # 开始需要管理员验证的更新流程
+            logger.info("🚀 开始管理员验证的更新流程...")
+            self.auto_updater.start_update_with_admin_auth(update_info)
+            
+        except Exception as e:
+            logger.error(f"❌ 处理更新通知点击失败: {e}", exc_info=True)
+            self.show_error(f"Failed to process update request: {e}")
 
     def end_session_early(self) -> None:
         """提前结束会话"""
@@ -607,7 +672,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """窗口关闭事件"""
         try:
-            logger.info("窗口关闭事件触发，验证管理员密码")
+            logger.info("窗口关闭事件触发")
             
             # 首先停止窗口监控，避免异步问题
             if hasattr(self, 'window_monitor') and self.window_monitor.is_running:
@@ -616,7 +681,22 @@ class MainWindow(QMainWindow):
                 if self.window_monitor.monitor_task:
                     self.window_monitor.monitor_task.cancel()
             
-            # 验证管理员密码
+            # 检查是否是更新退出（跳过管理员密码验证）
+            if hasattr(self, '_updating') and self._updating:
+                logger.info("检测到更新退出，跳过管理员密码验证")
+                if self.session_active:
+                    logger.info("更新时强制结束活动会话...")
+                    self.session_active = False
+                    if hasattr(self, 'session_timer'):
+                        self.session_timer.stop()
+                
+                # 简单清理并强制退出
+                self._force_exit()
+                event.accept()
+                return
+            
+            # 正常退出时验证管理员密码
+            logger.info("正常退出，验证管理员密码")
             password, ok = QInputDialog.getText(self, "Administrator Verification", "Please enter administrator password:", QLineEdit.EchoMode.Password)
             if ok and password:
                 if sha256(password) == ADMIN_PASS_HASH:
@@ -793,12 +873,14 @@ class MainWindow(QMainWindow):
                 # 先断开可能存在的连接
                 self.auto_updater.update_available.disconnect(self.on_update_available)
                 self.auto_updater.update_check_failed.disconnect(self.on_update_check_failed)
+                self.auto_updater.no_update_available.disconnect(self.on_no_update_available)
             except:
                 pass  # 如果没有连接则忽略
             
             # 重新连接信号
             self.auto_updater.update_available.connect(self.on_update_available)
             self.auto_updater.update_check_failed.connect(self.on_update_check_failed)
+            self.auto_updater.no_update_available.connect(self.on_no_update_available)
             self._auto_updater_ready = True
             logger.info("✅ 自动更新器初始化完成，信号已连接")
             

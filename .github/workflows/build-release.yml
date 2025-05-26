@@ -186,8 +186,8 @@ jobs:
                 exit 1
               }
             } else {
-              Write-Error "No changes were made to version.py. Check regex patterns."
-              exit 1
+            Write-Error "No changes were made to version.py. Check regex patterns."
+            exit 1
             }
           }
           

@@ -68,14 +68,67 @@ class ToolTip(QWidget):
 
 class StatusBar(QWidget):
     """状态栏"""
+    
+    # 信号定义
+    update_notification_clicked = pyqtSignal(object)  # 更新通知被点击
+    
     def __init__(self, parent=None):
         super().__init__(parent)
+        
+        # 设置状态栏的固定高度，像普通程序一样小
+        self.setFixedHeight(20)  # 更紧凑的状态栏高度
+        
+        # 设置状态栏样式，模仿Windows标准状态栏
+        self.setStyleSheet("""
+            StatusBar {
+                background-color: #f0f0f0;
+                border-top: 1px solid #d0d0d0;
+                font-size: 11px;
+            }
+        """)
+        
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(5, 2, 5, 2)
+        self.layout.setContentsMargins(6, 1, 6, 1)  # 更紧凑的边距
+        self.layout.setSpacing(8)  # 更紧凑的元素间距
         
         # 消息标签（左侧）
         self.label = QLabel("")
+        self.label.setStyleSheet("""
+            QLabel {
+                color: #333333;
+                font-size: 11px;
+                background: transparent;
+                border: none;
+            }
+        """)
         self.layout.addWidget(self.label)
+        
+        # 弹性空间
+        self.layout.addStretch()
+        
+        # 更新通知标签（中间）
+        self.update_label = QLabel("")
+        self.update_label.setStyleSheet("""
+            QLabel {
+                color: #0066cc;
+                background-color: #e6f2ff;
+                border: 1px solid #b3d9ff;
+                border-radius: 2px;
+                padding: 1px 5px;
+                font-weight: normal;
+                font-size: 10px;
+                max-height: 14px;
+                min-height: 14px;
+            }
+            QLabel:hover {
+                background-color: #cce6ff;
+                border-color: #0066cc;
+                cursor: pointer;
+            }
+        """)
+        self.update_label.hide()  # 初始隐藏
+        self.update_label.mousePressEvent = self._on_update_label_clicked
+        self.layout.addWidget(self.update_label)
         
         # 弹性空间
         self.layout.addStretch()
@@ -88,12 +141,22 @@ class StatusBar(QWidget):
             version_text = "v?.?.?"
         
         self.version_label = QLabel(version_text)
-        self.version_label.setStyleSheet("color: #888888; font-size: 10px;")
+        self.version_label.setStyleSheet("""
+            QLabel {
+                color: #888888; 
+                font-size: 10px;
+                background: transparent;
+                border: none;
+            }
+        """)
         self.layout.addWidget(self.version_label)
         
         self.setLayout(self.layout)
         self.message_timer = QTimer(self)
         self.message_timer.timeout.connect(self.clear_message)
+        
+        # 存储更新信息
+        self.update_info = None
         
     def show_message(self, message, duration=3000):
         """显示临时消息"""
@@ -110,6 +173,24 @@ class StatusBar(QWidget):
         """清除消息"""
         self.label.setText("")
         self.message_timer.stop()
+    
+    def show_update_notification(self, update_info):
+        """显示更新通知"""
+        self.update_info = update_info
+        self.update_label.setText(f"🔄 New version {update_info.version} available - Click to update")
+        self.update_label.setVisible(True)
+        self.update_label.show()
+    
+    def hide_update_notification(self):
+        """隐藏更新通知"""
+        self.update_info = None
+        self.update_label.setVisible(False)
+        self.update_label.hide()
+    
+    def _on_update_label_clicked(self, event):
+        """更新标签被点击"""
+        if self.update_info:
+            self.update_notification_clicked.emit(self.update_info)
 
 class OverlayWindow(QDialog):
     """覆盖窗口，用于倒计时显示"""
