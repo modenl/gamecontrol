@@ -8,6 +8,7 @@ import logging
 from logic.database import Database, get_week_start
 from logic.constants import MAX_WEEKLY_LIMIT, DEFAULT_WEEKLY_LIMIT
 from logic.math_exercises import MathExercises
+from logic.event_logger import get_event_logger
 
 # 配置日志
 logger = logging.getLogger('game_limiter')
@@ -23,6 +24,9 @@ class GameLimiter:
         
         # 初始化数学练习模块
         self.math_exercises = MathExercises()
+        
+        # 初始化事件日志记录器
+        self.event_logger = get_event_logger()
         
         # 尝试自动优化数据库
         self._check_auto_optimize()
@@ -47,9 +51,17 @@ class GameLimiter:
             self.current_session_duration = duration
             self.current_game_name = game_name
             logger.info(f"开始游戏Session: {game_name}, 时长: {duration}分钟")
+            
+            # 记录会话启动事件
+            self.event_logger.log_session_started(
+                duration_hours=duration / 60.0,
+                session_type=f"{game_name}游戏会话"
+            )
+            
             return self.current_session_start, self.current_session_duration
         except Exception as e:
             logger.error(f"开始Session时出错: {e}")
+            self.event_logger.log_error_event(f"开始Session时出错: {e}", "SESSION_START_ERROR")
             raise Exception(f"无法开始游戏Session: {e}")
         
     async def end_session(self, note=None):
@@ -82,6 +94,12 @@ class GameLimiter:
             # 记录日志
             logger.info(f"结束游戏Session: {self.current_game_name}, 实际时长: {actual_duration}分钟, 备注: {note}")
             
+            # 记录会话结束事件
+            self.event_logger.log_session_ended(
+                actual_duration=actual_duration / 60.0,
+                reason=note if note else "正常结束"
+            )
+            
             # 重置当前会话
             temp_start = self.current_session_start
             self.current_session_start = None
@@ -93,6 +111,7 @@ class GameLimiter:
             return temp_start, end_time, actual_duration
         except Exception as e:
             logger.error(f"结束Session时出错: {e}")
+            self.event_logger.log_error_event(f"结束Session时出错: {e}", "SESSION_END_ERROR")
             raise Exception(f"无法结束游戏Session: {e}")
         
     def kill_minecraft(self):

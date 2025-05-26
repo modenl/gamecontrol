@@ -25,6 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger("GameTimeLimiter")
 logger.info("应用程序初始化中...")
 
+# 导入事件日志系统
+from logic.event_logger import get_event_logger
+
 # 全局变量用于资源清理
 app = None
 loop = None
@@ -37,6 +40,13 @@ def cleanup_resources():
     
     try:
         logger.info("开始清理应用程序资源...")
+        
+        # 记录应用关闭事件
+        try:
+            event_logger = get_event_logger()
+            event_logger.log_app_shutdown("正常退出")
+        except Exception as e:
+            logger.error(f"记录应用关闭事件时出错: {e}")
         
         # 1. 首先停止窗口监控
         if window and hasattr(window, 'window_monitor'):
@@ -264,6 +274,13 @@ def main():
                     
                     # 记录启动时间
                     logger.info(f"应用程序启动完成，耗时: {time.time() - start_time:.2f} 秒")
+                    
+                    # 记录应用启动事件
+                    try:
+                        event_logger = get_event_logger()
+                        event_logger.log_app_started()
+                    except Exception as e:
+                        logger.error(f"记录应用启动事件时出错: {e}")
 
                 # 使用asyncio运行初始化任务
                 with loop:

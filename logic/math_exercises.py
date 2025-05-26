@@ -8,6 +8,7 @@ import re
 from dotenv import load_dotenv
 from logic.database import Database, get_week_start
 from logic.constants import MATH_REWARD_PER_QUESTION, MAX_DAILY_MATH_QUESTIONS, MATH_DIFFICULTY_REWARDS
+from logic.event_logger import get_event_logger
 
 # 配置日志
 logger = logging.getLogger('math_exercises')
@@ -36,6 +37,8 @@ class MathExercises:
         self.questions = []
         self.current_index = 0
         self.api_error = None
+        # 初始化事件日志记录器
+        self.event_logger = get_event_logger()
         
     async def initialize(self):
         """Async initialization to be called after construction"""
@@ -580,6 +583,15 @@ Timestamp: {now_str}
             # 更新当前问题对象
             question_obj["is_correct"] = is_correct
             
+            # 记录题目回答事件
+            self.event_logger.log_question_answered(
+                question_type="数学",
+                user_answer=user_answer,
+                correct_answer=standard_answer,
+                is_correct=is_correct,
+                attempt_count=1
+            )
+            
             # 添加到数据库
             await self._add_exercise_result(question, user_answer, is_correct, reward)
             
@@ -658,6 +670,15 @@ IMPORTANT: Please wrap ALL math expressions using $$...$$ (even inline) to ensur
                 
                 # 更新当前问题对象
                 question_obj["is_correct"] = is_correct
+                
+                # 记录题目回答事件
+                self.event_logger.log_question_answered(
+                    question_type="数学",
+                    user_answer=user_answer,
+                    correct_answer=standard_answer,
+                    is_correct=is_correct,
+                    attempt_count=1
+                )
                 
                 # 添加到数据库
                 await self._add_exercise_result(question, user_answer, is_correct, reward)

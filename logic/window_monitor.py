@@ -9,6 +9,8 @@ import subprocess
 
 # 导入任务管理器
 from logic.task_manager import get_task_manager, run_task_safe
+# 导入事件日志系统
+from logic.event_logger import get_event_logger
 
 # 配置日志
 logger = logging.getLogger('window_monitor')
@@ -29,6 +31,7 @@ class WindowMonitor:
         self.monitor_task = None
         self.task_manager = get_task_manager()  # 使用任务管理器
         self._monitor_task_id = None  # 任务ID
+        self.event_logger = get_event_logger()  # 事件日志记录器
         
         # 受限应用配置，可以在此处添加更多应用
         self.restricted_apps = [
@@ -62,6 +65,9 @@ class WindowMonitor:
         self.is_running = True
         logger.info(f"开始监控活动窗口，检查间隔: {self.check_interval}秒")
         
+        # 记录监控启动事件
+        self.event_logger.log_monitor_started(self.check_interval)
+        
         # 使用任务管理器创建监控任务
         self._monitor_task_id = run_task_safe(
             self._monitor_loop(),
@@ -79,6 +85,9 @@ class WindowMonitor:
             
         logger.info("正在停止窗口监控...")
         self.is_running = False
+        
+        # 记录监控停止事件
+        self.event_logger.log_monitor_stopped("手动停止")
         
         # 使用任务管理器取消监控任务
         if self._monitor_task_id:
@@ -99,6 +108,9 @@ class WindowMonitor:
         """同步停止监控（用于应用退出时）"""
         logger.info("同步停止窗口监控...")
         self.is_running = False
+        
+        # 记录监控停止事件
+        self.event_logger.log_monitor_stopped("应用退出")
         
         if self.monitor_task:
             try:
@@ -152,19 +164,30 @@ class WindowMonitor:
                 app_names = ', '.join([app['name'] for app in detected_apps])
                 logger.warning(f"检测到未授权使用游戏: {app_names}")
                 
+                # 记录检测到的每个受限应用
+                for app in detected_apps:
+                    self.event_logger.log_restricted_app_detected(
+                        app['name'], 
+                        app['type'],
+                        details=app.get('details', {})
+                    )
+                
                 # 对进程类型应用，尝试终止进程
                 for app in detected_apps:
                     if app['type'] == 'process':
                         if app['name'] == 'minecraft':
                             # 使用现有方法终止Minecraft
                             await asyncio.to_thread(self.game_limiter.kill_minecraft)
+                            self.event_logger.log_process_terminated('minecraft')
                 
                 # 锁定屏幕
                 success = await asyncio.to_thread(self.game_limiter.lock_screen)
                 if success:
                     logger.info("成功锁定屏幕")
+                    self.event_logger.log_screen_locked(f"检测到禁止应用: {app_names}")
                 else:
                     logger.error("锁定屏幕失败")
+                    self.event_logger.log_error_event("锁定屏幕失败", "SCREEN_LOCK_FAILED")
                 
         except Exception as e:
             logger.error(f"检查受限应用时出错: {e}")
@@ -185,7 +208,13 @@ class WindowMonitor:
                         for pattern in app['process_patterns']:
                             if pattern.lower() in proc_name:
                                 logger.info(f"检测到受限进程: {app['name']} - {proc_name} (PID: {proc.info['pid']})")
-                                detected.append(app)
+                                # 添加详细信息到应用记录中
+                                app_with_details = app.copy()
+                                app_with_details['details'] = {
+                                    'process_name': proc_name,
+                                    'pid': proc.info['pid']
+                                }
+                                detected.append(app_with_details)
                                 break
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
