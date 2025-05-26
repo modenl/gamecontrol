@@ -25,8 +25,8 @@ APP_AUTHOR = "GameControl Team"
 APP_URL = "https://github.com/yourusername/gamecontrol"  # 替换为实际的GitHub仓库地址
 
 # GitHub相关配置
-GITHUB_REPO_OWNER = "yourusername"  # 替换为实际的GitHub用户名
-GITHUB_REPO_NAME = "gamecontrol"    # 替换为实际的仓库名
+GITHUB_REPO_OWNER = "modenl"        # 实际的GitHub用户名
+GITHUB_REPO_NAME = "gamecontrol"    # 实际的仓库名
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_RELEASES_URL = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases"
 
