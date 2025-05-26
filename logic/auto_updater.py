@@ -576,6 +576,10 @@ class AutoUpdater(QObject):
         """处理发现更新"""
         logger.info(f"发现新版本: {update_info.version}")
         
+        # 首先发送信号通知主窗口
+        logger.info("📡 发送update_available信号到主窗口...")
+        self.update_available.emit(update_info)
+        
         # 检查是否可以更新
         can_update, reason = self.can_update_now()
         if not can_update:
