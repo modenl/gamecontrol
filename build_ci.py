@@ -71,10 +71,15 @@ def main():
     print("[CI BUILD] Verifying critical imports...")
     try:
         import PyQt6
-        print(f"[CI BUILD] ✓ PyQt6 version: {PyQt6.QtCore.PYQT_VERSION_STR}")
-        print(f"[CI BUILD] ✓ Qt version: {PyQt6.QtCore.QT_VERSION_STR}")
+        from PyQt6 import QtCore
+        print(f"[CI BUILD] ✓ PyQt6 version: {QtCore.PYQT_VERSION_STR}")
+        print(f"[CI BUILD] ✓ Qt version: {QtCore.QT_VERSION_STR}")
     except ImportError as e:
         print(f"[CI BUILD] ✗ PyQt6 import failed: {e}")
+        print(f"[CI BUILD] Traceback: {traceback.format_exc()}")
+        return 1
+    except AttributeError as e:
+        print(f"[CI BUILD] ✗ PyQt6 attribute error: {e}")
         print(f"[CI BUILD] Traceback: {traceback.format_exc()}")
         return 1
     
