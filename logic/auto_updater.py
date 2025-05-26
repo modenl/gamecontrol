@@ -83,23 +83,26 @@ class UpdateChecker(QObject):
             logger.info(f"📋 当前版本: {__version__}")
             logger.info(f"🔗 GitHub API URL: {GITHUB_RELEASES_URL}/latest")
             
-            # 创建HTTP客户端
-            if not self.client:
-                logger.info("📡 创建HTTP客户端...")
-                self.client = httpx.AsyncClient(
-                    timeout=30.0,
-                    follow_redirects=True  # 自动跟随重定向
+            # 使用requests库进行同步请求，避免qasync兼容性问题
+            import requests
+            import concurrent.futures
+            
+            def sync_request():
+                """同步HTTP请求"""
+                logger.info("🌐 请求GitHub API...")
+                response = requests.get(
+                    f"{GITHUB_RELEASES_URL}/latest",
+                    timeout=30,
+                    headers={'User-Agent': 'GameTimeLimiter-AutoUpdater/1.0'}
                 )
-                logger.info("✅ HTTP客户端创建成功")
+                logger.info(f"📡 API响应状态: {response.status_code}")
+                response.raise_for_status()
+                return response.json()
             
-            # 获取最新发布信息
-            logger.info("🌐 请求GitHub API...")
-            response = await self.client.get(f"{GITHUB_RELEASES_URL}/latest")
-            logger.info(f"📡 API响应状态: {response.status_code}")
-            
-            response.raise_for_status()
-            
-            release_data = response.json()
+            # 在线程池中运行同步请求
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                release_data = await loop.run_in_executor(executor, sync_request)
             latest_version = release_data["tag_name"].lstrip("v")  # 移除v前缀
             
             logger.info(f"📋 当前版本: {__version__}")
@@ -149,8 +152,12 @@ class UpdateChecker(QObject):
             
             return update_info
             
-        except httpx.HTTPError as e:
+        except requests.RequestException as e:
             error_msg = f"网络请求失败: {e}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        except requests.HTTPError as e:
+            error_msg = f"HTTP错误: {e}"
             logger.error(error_msg)
             raise Exception(error_msg)
         except json.JSONDecodeError as e:
@@ -164,9 +171,8 @@ class UpdateChecker(QObject):
     
     async def close(self):
         """关闭HTTP客户端"""
-        if self.client:
-            await self.client.aclose()
-            self.client = None
+        # 使用requests库，无需特殊关闭操作
+        self.client = None
 
 
 class UpdateDownloader(QObject):
@@ -257,16 +263,20 @@ class UpdateDownloader(QObject):
             logger.info(f"下载完成: {download_path}")
             return download_path
                 
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 302:
-                error_msg = f"重定向错误 (302): 可能是网络或权限问题。请稍后重试。"
-                logger.error(f"HTTP 302 重定向错误: {e}")
-                logger.error(f"请求URL: {e.request.url}")
-                if hasattr(e.response, 'headers') and 'location' in e.response.headers:
-                    logger.error(f"重定向到: {e.response.headers['location']}")
-            else:
-                error_msg = f"HTTP错误 {e.response.status_code}: {e}"
-                logger.error(error_msg)
+        except requests.HTTPError as e:
+            error_msg = f"HTTP错误: {e}"
+            logger.error(error_msg)
+            
+            # 清理临时文件
+            if 'download_path' in locals() and os.path.exists(download_path):
+                try:
+                    os.remove(download_path)
+                except:
+                    pass
+            raise Exception(error_msg)
+        except requests.RequestException as e:
+            error_msg = f"网络请求错误: {e}"
+            logger.error(error_msg)
             
             # 清理临时文件
             if 'download_path' in locals() and os.path.exists(download_path):
@@ -288,9 +298,8 @@ class UpdateDownloader(QObject):
     
     async def close(self):
         """关闭HTTP客户端"""
-        if self.client:
-            await self.client.aclose()
-            self.client = None
+        # 使用requests库，无需特殊关闭操作
+        self.client = None
 
 
 class AutoUpdater(QObject):
