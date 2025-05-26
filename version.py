@@ -85,25 +85,7 @@ def is_newer_version(current_version, new_version):
     """
     return compare_versions(current_version, new_version) < 0 
 
-# 测试版本覆盖功能 - 用于快速测试自动更新
-def get_test_version():
-    """获取测试版本，支持命令行参数覆盖"""
-    import sys
-    
-    # 检查命令行参数中是否有版本覆盖
-    for i, arg in enumerate(sys.argv):
-        if arg == "--test-version" and i + 1 < len(sys.argv):
-            test_version = sys.argv[i + 1]
-            print(f"🧪 测试模式：版本覆盖为 {test_version}")
-            return test_version
-        elif arg.startswith("--test-version="):
-            test_version = arg.split("=", 1)[1]
-            print(f"🧪 测试模式：版本覆盖为 {test_version}")
-            return test_version
-    
-    return __version__
-
-# 获取当前有效版本（可能被测试参数覆盖）
+# 获取当前有效版本
 def get_current_version():
     """获取当前有效版本"""
-    return get_test_version()
+    return __version__

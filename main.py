@@ -178,7 +178,30 @@ def main():
     """主入口函数"""
     global app, loop, game_limiter, window
     
-
+    # 处理命令行参数 - 版本覆盖测试
+    test_version = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--test-version" and i + 1 < len(sys.argv):
+            test_version = sys.argv[i + 1]
+            logger.info(f"🧪 测试模式：版本覆盖为 {test_version}")
+            break
+        elif arg.startswith("--test-version="):
+            test_version = arg.split("=", 1)[1]
+            logger.info(f"🧪 测试模式：版本覆盖为 {test_version}")
+            break
+    
+    # 如果有测试版本，动态修改version模块
+    if test_version:
+        try:
+            import version
+            # 保存原始版本
+            original_version = version.__version__
+            # 覆盖版本
+            version.__version__ = test_version
+            version.VERSION_INFO["major"], version.VERSION_INFO["minor"], version.VERSION_INFO["patch"] = map(int, test_version.split('.'))
+            logger.info(f"✅ 版本已覆盖：{original_version} -> {test_version}")
+        except Exception as e:
+            logger.error(f"❌ 版本覆盖失败: {e}")
     
     start_time = time.time()
     logger.info("应用程序启动")
