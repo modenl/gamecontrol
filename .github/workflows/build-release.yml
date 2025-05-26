@@ -94,6 +94,12 @@ jobs:
       run: |
         python build.py --optimize 1
         
+        # Backup the standard build
+        if (Test-Path "dist/GameTimeLimiter.exe") {
+          Copy-Item "dist/GameTimeLimiter.exe" "GameTimeLimiter-Standard.exe"
+          echo "Standard build backed up"
+        }
+        
     - name: Build application (Portable)
       run: |
         # Clean previous build
@@ -106,6 +112,13 @@ jobs:
         # Create portable package
         if (Test-Path "dist/GameTimeLimiter") {
           Compress-Archive -Path "dist/GameTimeLimiter/*" -DestinationPath "dist/GameTimeLimiter-Portable-v${{ steps.get_version.outputs.version }}.zip"
+        }
+        
+        # Restore standard build
+        if (Test-Path "GameTimeLimiter-Standard.exe") {
+          Copy-Item "GameTimeLimiter-Standard.exe" "dist/GameTimeLimiter.exe"
+          Remove-Item "GameTimeLimiter-Standard.exe"
+          echo "Standard build restored"
         }
         
     - name: Verify builds
