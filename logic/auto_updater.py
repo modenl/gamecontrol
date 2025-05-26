@@ -557,16 +557,33 @@ class AutoUpdater(QObject):
             
             if update_info:
                 logger.info(f"🎉 _async_check_for_updates发现新版本: {update_info.version}")
-                logger.info(f"📋 准备通过QTimer.singleShot调用on_update_available...")
-                # 在主线程中调用处理方法
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: self.on_update_available(update_info))
-                logger.info(f"✅ QTimer.singleShot已安排on_update_available调用")
+                logger.info(f"📋 准备通过checker信号发送到主线程...")
+                
+                # 直接通过checker发送信号，这样信号会正确路由到AutoUpdater.on_update_available
+                try:
+                    logger.info(f"🚀 通过checker.update_available.emit发送信号...")
+                    self.checker.update_available.emit(update_info)
+                    logger.info(f"✅ checker.update_available.emit已调用")
+                    
+                except Exception as e:
+                    logger.error(f"❌ 通过checker发送信号失败: {e}")
+                    # 备用方法：使用QTimer
+                    try:
+                        logger.info(f"🔄 尝试备用方法：QTimer.singleShot...")
+                        from PyQt6.QtCore import QTimer
+                        QTimer.singleShot(0, lambda: self.on_update_available(update_info))
+                        logger.info(f"✅ QTimer.singleShot备用方法已调用")
+                    except Exception as e2:
+                        logger.error(f"❌ 备用方法也失败: {e2}")
+                        
             else:
                 logger.info("ℹ️ 当前版本是最新的")
                 # 在主线程中调用处理方法
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: self.on_no_update_available())
+                try:
+                    self.checker.no_update_available.emit()
+                    logger.info("✅ no_update_available信号已发送")
+                except Exception as e:
+                    logger.error(f"❌ 发送no_update_available信号失败: {e}")
                 
         except Exception as e:
             logger.error(f"❌ 异步检查更新失败: {e}", exc_info=True)
