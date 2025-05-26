@@ -34,7 +34,7 @@ def check_dependencies():
             
         try:
             __import__(package_name)
-            print(f"✓ {package} already installed")
+            print(f"[OK] {package} already installed")
         except ImportError:
             missing_packages.append(package)
     
@@ -44,7 +44,7 @@ def check_dependencies():
             print(f"Installing {package}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
     else:
-        print("✓ All dependencies are installed")
+        print("[OK] All dependencies are installed")
 
 def create_env_example():
     """Create .env.example file"""
@@ -52,9 +52,9 @@ def create_env_example():
         with open('.env.example', 'w', encoding='utf-8') as f:
             f.write("# OpenAI API Configuration\n")
             f.write("OPENAI_API_KEY=your_api_key_here\n")
-        print("✓ Created .env.example file")
+        print("[OK] Created .env.example file")
     else:
-        print("✓ .env.example already exists")
+        print("[OK] .env.example already exists")
 
 def install_upx():
     """Check if UPX is installed, prompt for installation if not found"""

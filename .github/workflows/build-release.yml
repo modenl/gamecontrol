@@ -32,6 +32,16 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-pip-
           
+    - name: Set UTF-8 encoding
+      run: |
+        # Set UTF-8 encoding for Python and console
+        $env:PYTHONIOENCODING = "utf-8"
+        $env:PYTHONLEGACYWINDOWSSTDIO = "utf-8"
+        echo "PYTHONIOENCODING=utf-8" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "PYTHONLEGACYWINDOWSSTDIO=utf-8" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        # Set console to UTF-8
+        chcp 65001
+        
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
