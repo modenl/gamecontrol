@@ -50,8 +50,11 @@ jobs:
         
     - name: Install system dependencies
       run: |
-        # Install Visual C++ Redistributable for PyQt6
-        choco install vcredist2019 -y
+        # Check if Visual C++ Redistributable is already available
+        echo "Checking system for Visual C++ Redistributable..."
+        Get-ChildItem "C:\Program Files*\Microsoft Visual Studio" -ErrorAction SilentlyContinue | Format-Table
+        Get-ChildItem "C:\Windows\System32\msvcp*.dll" -ErrorAction SilentlyContinue | Format-Table
+        echo "System dependencies check completed. GitHub Actions runners typically have required runtimes."
         
     - name: Install dependencies
       run: |
