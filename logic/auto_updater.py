@@ -25,7 +25,8 @@ try:
         UPDATE_DOWNLOAD_TIMEOUT,
         UPDATE_BACKUP_ENABLED,
         is_newer_version,
-        APP_DISPLAY_NAME
+        APP_DISPLAY_NAME,
+        get_current_version
     )
 except ImportError:
     # 如果版本文件不存在，使用默认值
@@ -35,6 +36,9 @@ except ImportError:
     UPDATE_DOWNLOAD_TIMEOUT = 300
     UPDATE_BACKUP_ENABLED = True
     APP_DISPLAY_NAME = "Game Time Limiter"
+    
+    def get_current_version():
+        return __version__
     
     def is_newer_version(current, new):
         """检查新版本是否比当前版本更新
@@ -98,7 +102,8 @@ class UpdateChecker(QObject):
         """
         try:
             logger.info("🔍 UpdateChecker 开始检查更新...")
-            logger.info(f"📋 当前版本: {__version__}")
+            current_version = get_current_version()
+            logger.info(f"📋 当前版本: {current_version}")
             logger.info(f"🔗 GitHub API URL: {GITHUB_RELEASES_URL}/latest")
             
             # 使用requests库进行同步请求，避免qasync兼容性问题
@@ -158,13 +163,13 @@ class UpdateChecker(QObject):
                 release_data = await loop.run_in_executor(executor, sync_request)
             latest_version = release_data["tag_name"].lstrip("v")  # 移除v前缀
             
-            logger.info(f"📋 当前版本: {__version__}")
+            logger.info(f"📋 当前版本: {current_version}")
             logger.info(f"📋 最新版本: {latest_version}")
             logger.info(f"📅 发布时间: {release_data['published_at']}")
             logger.info(f"📦 资源数量: {len(release_data['assets'])}")
             
             # 检查是否有新版本
-            if not is_newer_version(__version__, latest_version):
+            if not is_newer_version(current_version, latest_version):
                 logger.info("ℹ️ 当前已是最新版本")
                 return None
             
@@ -438,7 +443,7 @@ class AutoUpdater(QObject):
             settings_file = "update_settings.json"
             data = {
                 "last_check_time": datetime.now().isoformat(),
-                "current_version": __version__
+                "current_version": get_current_version()
             }
             with open(settings_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -651,9 +656,10 @@ class AutoUpdater(QObject):
                 # 格式化当前时间
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
+                current_version = get_current_version()
                 message = f"""您当前使用的已是最新版本！
 
-当前版本: {__version__}
+当前版本: {current_version}
 检查时间: {current_time}
 
 感谢您使用 {APP_DISPLAY_NAME}！"""
@@ -700,10 +706,11 @@ class AutoUpdater(QObject):
             logger.info(f"   发布日期: {date_text}")
             
             # 构建消息文本
+            current_version = get_current_version()
             message = f"""
 发现新版本可用！
 
-当前版本: {__version__}
+当前版本: {current_version}
 最新版本: {update_info.version}
 发布日期: {date_text}
 文件大小: {size_text}
@@ -1075,15 +1082,16 @@ class AutoUpdater(QObject):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # 根据当前文件类型确定备份文件名
+            current_version = get_current_version()
             if current_exe.endswith('.exe'):
-                backup_name = f"GameTimeLimiter_v{__version__}_{timestamp}.exe"
+                backup_name = f"GameTimeLimiter_v{current_version}_{timestamp}.exe"
             elif current_exe.endswith('.py'):
-                backup_name = f"main_v{__version__}_{timestamp}.py"
+                backup_name = f"main_v{current_version}_{timestamp}.py"
             else:
                 # 保持原始扩展名
                 base_name = os.path.basename(current_exe)
                 name, ext = os.path.splitext(base_name)
-                backup_name = f"{name}_v{__version__}_{timestamp}{ext}"
+                backup_name = f"{name}_v{current_version}_{timestamp}{ext}"
             
             backup_path = os.path.join(backup_dir, backup_name)
             logger.info(f"📝 备份文件名: {backup_name}")
