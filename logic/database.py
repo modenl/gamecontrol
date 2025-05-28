@@ -33,8 +33,9 @@ def get_week_start(date=None):
     return d - datetime.timedelta(days=days_since_sunday)
 
 class Database:
-    def __init__(self):
+    def __init__(self, db_path=None):
         """初始化数据库连接"""
+        self.db_path = db_path or DB_FILE
         self.conn = None
         self.cache = {}
         self.cache_timeout = {}
@@ -49,7 +50,7 @@ class Database:
         try:
             # 设置超时和重试
             self.conn = sqlite3.connect(
-                DB_FILE,
+                self.db_path,
                 timeout=20,  # 设置超时时间为20秒
                 check_same_thread=False  # 允许多线程访问
             )

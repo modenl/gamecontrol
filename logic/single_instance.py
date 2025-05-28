@@ -6,15 +6,16 @@
 
 # 导入简单可靠的实现
 from .single_instance_simple import (
-    SimpleSingleInstance,
-    check_single_instance_simple,
+    SingleInstanceChecker,
+    check_single_instance,
     show_already_running_message
 )
 
 # 向后兼容的别名
-SingleInstance = SimpleSingleInstance
+SingleInstance = SingleInstanceChecker
+SimpleSingleInstance = SingleInstanceChecker
 
-def check_single_instance(app_name="GameControl"):
+def check_single_instance_compat(app_name="GameControl"):
     """
     向后兼容的单实例检查函数
     
@@ -22,6 +23,6 @@ def check_single_instance(app_name="GameControl"):
         app_name: 应用程序名称
         
     Returns:
-        SimpleSingleInstance: 单实例管理器对象，如果获取锁失败则返回None
+        SingleInstanceChecker: 单实例管理器对象，如果获取锁失败则返回None
     """
-    return check_single_instance_simple(app_name) 
+    return check_single_instance(app_name) 

@@ -1,8 +1,11 @@
+import os
+from hashlib import sha256
+
 # 应用名称
 APP_NAME = "GameControl"
 
 # 数据库文件
-DB_FILE = "game_sessions.db"
+DB_FILE = os.getenv('GAMECONTROL_DB_PATH', "game_sessions.db")
 
 # 管理员密码（SHA256哈希）
 ADMIN_PASS_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # 'password' 的sha256
@@ -59,4 +62,28 @@ BUTTON_PADY = 5
 PADDING_SMALL = 5
 PADDING_MEDIUM = 10
 PADDING_LARGE = 15
-PADDING_XLARGE = 20 
+PADDING_XLARGE = 20
+
+# 测试模式配置
+TEST_MODE = os.getenv('GAMECONTROL_TEST_MODE', 'false').lower() == 'true'
+TEST_ADMIN_PASSWORD = "test_admin_123"  # 测试专用管理员密码
+TEST_ADMIN_PASS_HASH = sha256(TEST_ADMIN_PASSWORD.encode()).hexdigest()
+
+# 测试数据库配置
+TEST_DB_FILE = "test_game_sessions.db"
+
+# 锁屏功能开关
+ENABLE_LOCK_SCREEN = True
+
+# 测试模式下的配置覆盖
+if TEST_MODE:
+    # 使用测试数据库
+    DB_FILE = TEST_DB_FILE
+    # 禁用锁屏
+    ENABLE_LOCK_SCREEN = False
+    # 使用测试管理员密码
+    ADMIN_PASS_HASH = TEST_ADMIN_PASS_HASH
+    # 禁用对话框
+    ENABLE_DIALOGS = False
+else:
+    ENABLE_DIALOGS = True 

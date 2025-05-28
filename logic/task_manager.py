@@ -67,12 +67,17 @@ class TaskManager(QObject):
         }
         
         self._task_queue.append(task_info)
-        logger.debug(f"任务已添加到队列: {task_id}, 队列长度: {len(self._task_queue)}")
         
         # 延迟启动处理器
         def start_processor():
-            if not self._is_processing and not self._shutdown:
-                self._start_processing()
+            if not self._shutdown:
+                if not self._is_processing:
+                    self._start_processing()
+                else:
+                    # 即使处理器在运行，也要确保队列中的任务被处理
+                    if self._task_queue and not self._current_task:
+                        self._is_processing = False  # 重置状态
+                        self._start_processing()
         
         # 如果没有延迟，立即启动；否则延迟启动
         if delay_ms <= 0:
@@ -91,7 +96,6 @@ class TaskManager(QObject):
             return
         
         self._is_processing = True
-        logger.debug("开始处理任务队列...")
         
         # 使用QTimer来顺序处理任务，避免qasync冲突
         self._process_next_task()
@@ -104,14 +108,11 @@ class TaskManager(QObject):
         
         if not self._task_queue:
             self._is_processing = False
-            logger.debug("任务队列已空，停止处理")
             return
         
         # 取出下一个任务
         task_info = self._task_queue.pop(0)
         self._current_task = task_info
-        
-        logger.debug(f"开始处理任务: {task_info['id']}")
         
         # 使用QTimer延迟执行，确保在正确的时机执行
         QTimer.singleShot(10, lambda: self._execute_task(task_info))
@@ -125,7 +126,6 @@ class TaskManager(QObject):
                 if not loop.is_running():
                     # 如果事件循环未运行，等待一下再重试
                     if retry_count < 3:
-                        logger.debug(f"事件循环未运行，等待重试: {task_info['id']} (重试 {retry_count + 1}/3)")
                         QTimer.singleShot(100, lambda: self._execute_task(task_info, retry_count + 1))
                         return
                     else:
@@ -135,7 +135,6 @@ class TaskManager(QObject):
             except RuntimeError:
                 # 如果没有运行中的事件循环，等待一下再重试
                 if retry_count < 3:
-                    logger.debug(f"没有运行中的事件循环，等待重试: {task_info['id']} (重试 {retry_count + 1}/3)")
                     QTimer.singleShot(100, lambda: self._execute_task(task_info, retry_count + 1))
                     return
                 else:
@@ -146,9 +145,7 @@ class TaskManager(QObject):
             # 创建任务包装器
             async def task_wrapper():
                 try:
-                    logger.debug(f"执行任务: {task_info['id']}")
                     result = await task_info['coro']
-                    logger.debug(f"任务完成: {task_info['id']}")
                     return result
                 except Exception as e:
                     logger.error(f"任务执行失败: {task_info['id']}, 错误: {e}")
@@ -176,7 +173,6 @@ class TaskManager(QObject):
                 self._task_failed(task_info, str(error))
             else:
                 result = future.result()
-                logger.debug(f"任务成功完成: {task_info['id']}")
                 self._task_completed(task_info, result)
         except Exception as e:
             logger.error(f"处理任务完成回调时出错: {task_info['id']}, 错误: {e}")
@@ -266,8 +262,6 @@ class TaskManager(QObject):
         
         if removed_tasks:
             logger.debug(f"任务已从队列中移除: {task_id}")
-        else:
-            logger.debug(f"任务不在队列中: {task_id}")
     
     def cancel_all_tasks_sync(self):
         """

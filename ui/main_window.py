@@ -2,6 +2,7 @@ import sys
 import asyncio
 import datetime
 import logging
+import threading
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -27,6 +28,8 @@ from logic.constants import (
     UI_MIN_HEIGHT,
     PADDING_MEDIUM,
     ADMIN_PASS_HASH,
+    TEST_MODE,
+    TEST_ADMIN_PASS_HASH,
 )
 from logic.game_limiter import GameLimiter
 from logic.database import sha256
@@ -65,7 +68,12 @@ class MainWindow(QMainWindow):
         self.setup_window()
         self.setup_ui()
         self.refresh_weekly_status_async()
-        QTimer.singleShot(1000, self.delayed_start_monitoring)
+        
+        # 在测试模式下跳过窗口监控
+        if not TEST_MODE:
+            QTimer.singleShot(1000, self.delayed_start_monitoring)
+        else:
+            logger.info("🧪 测试模式：跳过窗口监控启动")
 
     # --- 工具方法 ---
     def make_label(self, text: str, bold: bool = False, align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignCenter) -> QLabel:
@@ -98,9 +106,18 @@ class MainWindow(QMainWindow):
     def refresh_weekly_status_async(self) -> None:
         self.run_async(self.update_weekly_status())
 
-    def run_async(self, coro) -> None:
+    def run_async(self, coro) -> str:
         """安全地运行异步任务"""
-        run_task_safe(coro, delay_ms=10)
+        return run_task_safe(coro, delay_ms=10)
+    
+    def _start_button_clicked(self):
+        """开始按钮点击事件"""
+        # 检查是否在关闭过程中
+        if hasattr(self, '_updating') and self._updating:
+            logger.warning("应用程序正在更新中，忽略按钮点击")
+            return
+        
+        self.run_async(self.start_session_with_effect())
 
     def show_warning(self, msg: str) -> None:
         logger.warning(msg)
@@ -133,9 +150,15 @@ class MainWindow(QMainWindow):
         """窗口显示事件 - 在这里初始化自动更新器"""
         super().showEvent(event)
         
+        # 在测试模式下完全跳过所有自动更新器相关操作
+        if TEST_MODE:
+            logger.info("🧪 测试模式：完全跳过自动更新器相关操作")
+            return
+        
         # 只在第一次显示时初始化自动更新器
         if not hasattr(self, '_auto_updater_initialized'):
             self._auto_updater_initialized = True
+            
             logger.info("🪟 主窗口已显示，准备初始化自动更新器...")
             # 减少延迟时间，2秒足够确保组件稳定
             QTimer.singleShot(2000, self._init_auto_updater)
@@ -228,7 +251,7 @@ class MainWindow(QMainWindow):
         duration_layout.addWidget(self.duration_entry)
         session_buttons = QHBoxLayout()
         session_buttons.setSpacing(PADDING_MEDIUM)
-        self.start_button = self.create_button("Start Game", lambda: self.run_async(self.start_session_with_effect()))
+        self.start_button = self.create_button("Start Game", lambda: self._start_button_clicked())
         self.stop_button = self.create_button("End Early", self.end_session_early, enabled=False)
         session_buttons.addWidget(self.start_button)
         session_buttons.addWidget(self.stop_button)
@@ -281,12 +304,19 @@ class MainWindow(QMainWindow):
     def admin_login(self) -> None:
         """管理员登录"""
         logger.info("管理员登录尝试")
-        password, ok = QInputDialog.getText(self, "Administrator Login", "Please enter administrator password:", QLineEdit.EchoMode.Password)
-        if not ok or not password:
-            logger.info("管理员登录取消或未输入密码")
-            return
-        password_hash = sha256(password)
-        if password_hash == ADMIN_PASS_HASH:
+        
+        # 在测试模式下使用测试密码，避免阻塞
+        if TEST_MODE:
+            logger.info("🧪 测试模式：使用测试管理员密码")
+            password_hash = TEST_ADMIN_PASS_HASH
+        else:
+            password, ok = QInputDialog.getText(self, "Administrator Login", "Please enter administrator password:", QLineEdit.EchoMode.Password)
+            if not ok or not password:
+                logger.info("管理员登录取消或未输入密码")
+                return
+            password_hash = sha256(password)
+        
+        if password_hash == ADMIN_PASS_HASH or (TEST_MODE and password_hash == TEST_ADMIN_PASS_HASH):
             logger.info("管理员登录成功")
             self.show_admin_panel()
         else:
@@ -360,6 +390,11 @@ class MainWindow(QMainWindow):
     def check_for_updates_manual(self):
         """手动检查更新"""
         logger.info("👤 用户手动检查更新")
+        
+        # 在测试模式下跳过更新检查
+        if TEST_MODE:
+            logger.info("🧪 测试模式：跳过手动更新检查")
+            return
         
         try:
             # 检查自动更新器状态
@@ -478,6 +513,11 @@ class MainWindow(QMainWindow):
     def on_update_notification_clicked(self, update_info):
         """处理更新通知点击事件"""
         logger.info(f"🖱️ 用户点击了更新通知: {update_info.version}")
+        
+        # 在测试模式下跳过更新通知处理
+        if TEST_MODE:
+            logger.info("🧪 测试模式：跳过更新通知处理")
+            return
         
         try:
             # 要求管理员身份验证
@@ -617,7 +657,11 @@ class MainWindow(QMainWindow):
                 if confirm != QMessageBox.StandardButton.Yes:
                     return False
                 duration = status["remaining_minutes"]
+            
+            logger.info(f"开始游戏会话: {duration} 分钟")
             self.game_limiter.start_session(duration)
+            
+            # 更新UI状态
             self.session_active = True
             self.session_timer.start(duration)
             self.session_status.setText("In Progress")
@@ -625,7 +669,14 @@ class MainWindow(QMainWindow):
             self.stop_button.setEnabled(True)
             self.duration_entry.setEnabled(False)
             self.math_button.setEnabled(False)
+            
+            # 强制处理Qt事件确保UI更新
+            app = QApplication.instance()
+            if app:
+                app.processEvents()
+            
             self._safe_stop_monitoring()
+            logger.info("游戏会话已启动")
             return True
         except Exception as e:
             self.show_error(f"Error starting game Session: {str(e)}")
@@ -675,12 +726,29 @@ class MainWindow(QMainWindow):
         try:
             logger.info("窗口关闭事件触发")
             
+            # 立即禁用所有UI控件，防止在关闭过程中进行操作
+            self._disable_all_controls()
+            
             # 首先停止窗口监控，避免异步问题
             if hasattr(self, 'window_monitor') and self.window_monitor.is_running:
                 logger.info("停止窗口监控...")
                 self.window_monitor.is_running = False
                 if self.window_monitor.monitor_task:
                     self.window_monitor.monitor_task.cancel()
+            
+            # 在测试模式下跳过管理员密码验证
+            if TEST_MODE:
+                logger.info("🧪 测试模式：跳过管理员密码验证，直接退出")
+                if self.session_active:
+                    logger.info("测试模式：强制结束活动会话...")
+                    self.session_active = False
+                    if hasattr(self, 'session_timer'):
+                        self.session_timer.stop()
+                
+                # 简单清理并强制退出
+                self._force_exit()
+                event.accept()
+                return
             
             # 检查是否是更新退出（跳过管理员密码验证）
             if hasattr(self, '_updating') and self._updating:
@@ -923,3 +991,32 @@ class MainWindow(QMainWindow):
             task_id="stop_monitoring", 
             delay_ms=10
         )
+    
+    def _disable_all_controls(self):
+        """禁用所有UI控件"""
+        try:
+            # 禁用主要按钮
+            if hasattr(self, 'start_button'):
+                self.start_button.setEnabled(False)
+            
+            if hasattr(self, 'stop_button'):
+                self.stop_button.setEnabled(False)
+            
+            if hasattr(self, 'math_button'):
+                self.math_button.setEnabled(False)
+            
+            if hasattr(self, 'history_button'):
+                self.history_button.setEnabled(False)
+            
+            if hasattr(self, 'admin_button'):
+                self.admin_button.setEnabled(False)
+            
+            if hasattr(self, 'update_button'):
+                self.update_button.setEnabled(False)
+            
+            # 禁用输入框
+            if hasattr(self, 'duration_entry'):
+                self.duration_entry.setEnabled(False)
+            
+        except Exception as e:
+            logger.error(f"禁用UI控件时出错: {e}")

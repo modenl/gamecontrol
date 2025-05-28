@@ -6,24 +6,29 @@ import datetime
 import subprocess
 import logging
 from logic.database import Database, get_week_start
-from logic.constants import MAX_WEEKLY_LIMIT, DEFAULT_WEEKLY_LIMIT
+from logic.constants import MAX_WEEKLY_LIMIT, DEFAULT_WEEKLY_LIMIT, ENABLE_LOCK_SCREEN, TEST_MODE
 from logic.math_exercises import MathExercises
+from logic.math_exercises_mock import MockMathExercises
 from logic.event_logger import get_event_logger
 
 # 配置日志
 logger = logging.getLogger('game_limiter')
 
 class GameLimiter:
-    def __init__(self):
-        self.db = Database()
+    def __init__(self, db_path=None):
+        self.db = Database(db_path)
         self.current_session_start = None
         self.current_session_duration = 0
         self.current_game_name = "Minecraft"
         self.auto_optimize_interval = 7 * 24 * 60 * 60  # 7天（秒）
         self.last_optimize_time = 0
         
-        # 初始化数学练习模块
-        self.math_exercises = MathExercises()
+        # 初始化数学练习模块（测试模式下使用Mock）
+        if TEST_MODE:
+            self.math_exercises = MockMathExercises()
+            logger.info("使用Mock数学练习模块（测试模式）")
+        else:
+            self.math_exercises = MathExercises()
         
         # 初始化事件日志记录器
         self.event_logger = get_event_logger()
@@ -139,6 +144,14 @@ class GameLimiter:
         
     def lock_screen(self):
         """锁定Windows屏幕"""
+        # 测试模式下不锁屏
+        if not ENABLE_LOCK_SCREEN:
+            if TEST_MODE:
+                logger.info("测试模式：跳过锁屏操作")
+            else:
+                logger.info("锁屏功能已禁用")
+            return True
+            
         try:
             if sys.platform == "win32":
                 # Windows平台使用ctypes锁屏

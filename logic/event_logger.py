@@ -58,7 +58,7 @@ class EventLogger:
             
             self.logger.addHandler(file_handler)
             self.logger.addHandler(console_handler)
-            
+        
             # 防止消息传播到父logger，避免重复输出
             self.logger.propagate = False
         

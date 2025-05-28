@@ -551,7 +551,7 @@ class AdminPanel(QDialog):
         logger.info("管理员请求重置数学题目")
         # 创建异步任务
         asyncio.create_task(self.reset_math_questions())
-    
+
     async def reset_math_questions(self):
         """重置数学题目"""
         try:
